@@ -1,0 +1,143 @@
+import dataclasses
+import logging
+import re
+from typing import Protocol, runtime_checkable
+
+import flax.traverse_util
+import numpy as np
+
+import openpi.models.model as _model
+import openpi.shared.array_typing as at
+import openpi.shared.download as download
+
+logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class WeightLoader(Protocol):
+    def load(self, params: at.Params) -> at.Params:
+        """Loads the model weights.
+
+        Args:
+            params: Parameters of the model. This is a nested structure of array-like objects that
+                represent the model's parameters.
+
+        Returns:
+            Loaded parameters. The structure must be identical to `params`. If returning a subset of
+            the parameters the loader must merge the loaded parameters with `params`.
+        """
+
+
+@dataclasses.dataclass(frozen=True)
+class NoOpWeightLoader(WeightLoader):
+    def load(self, params: at.Params) -> at.Params:
+        return params
+
+
+@dataclasses.dataclass(frozen=True)
+class CheckpointWeightLoader(WeightLoader):
+    """Loads an entire set of weights from a checkpoint.
+
+    Compatible with:
+      trained checkpoints:
+        example: "./checkpoints/<config>/<exp>/<step>/params"
+      released checkpoints:
+        example: "gs://openpi-assets/checkpoints/<model>/params"
+    """
+
+    params_path: str
+    # Regex 用于指定哪些“在 checkpoint 中缺失、但在当前模型参数里存在”的参数
+    # 需要从当前模型参数中补齐。默认只补 LoRA 权重，保持原有行为。
+    missing_regex: str = ".*lora.*"
+
+    def load(self, params: at.Params) -> at.Params:
+        # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
+        loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        # Add all missing weights that匹配 missing_regex（例如 LoRA 或新增模块的权重）。
+        return _merge_params(loaded_params, params, missing_regex=self.missing_regex)
+
+
+@dataclasses.dataclass(frozen=True)
+class PaliGemmaWeightLoader(WeightLoader):
+    """Loads weights from the official PaliGemma checkpoint.
+
+    This will overwrite existing weights with similar names while keeping all extra weights intact.
+    This allows us to support the action expert which is used by the Pi0 model.
+    """
+
+    def load(self, params: at.Params) -> at.Params:
+        path = download.maybe_download(
+            "gs://vertex-model-garden-paligemma-us/paligemma/pt_224.npz", gs={"token": "anon"}
+        )
+        with path.open("rb") as f:
+            flat_params = dict(np.load(f, allow_pickle=False))
+        loaded_params = {"PaliGemma": flax.traverse_util.unflatten_dict(flat_params, sep="/")["params"]}
+        # Add all missing weights.
+        return _merge_params(loaded_params, params, missing_regex=".*")
+
+
+def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex: str) -> at.Params:
+    """Merges the loaded parameters with the reference parameters.
+
+    Args:
+        loaded_params: The parameters to merge.
+        params: The reference parameters.
+        missing_regex: A regex pattern for all missing keys that should be merged from the reference parameters.
+
+    Returns:
+        A new dictionary with the merged parameters.
+    """
+    flat_ref = flax.traverse_util.flatten_dict(params, sep="/")
+    flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep="/")
+
+    # First, take all weights that are a subset of the reference weights.
+    result = {}
+    for k, v in flat_loaded.items():
+        if k in flat_ref:
+            result[k] = v.astype(flat_ref[k].dtype) if v.dtype != flat_ref[k].dtype else v
+
+    flat_loaded.clear()
+
+    # Then, merge any missing weights as defined by the missing regex.
+    pattern = re.compile(missing_regex)
+    for k in {k for k in flat_ref if pattern.fullmatch(k)}:
+        if k not in result:
+            result[k] = flat_ref[k]
+
+    return flax.traverse_util.unflatten_dict(result, sep="/")
+
+
+def merge_loaded_params(loaded_params: at.Params, ref_params: at.Params, *, missing_regex: str = ".*") -> at.Params:
+    """Public wrapper for merging checkpoint params into a reference param tree.
+
+    This is useful outside of training (e.g., serving-time weight composition).
+
+    - All keys that exist in both `loaded_params` and `ref_params` are taken from `loaded_params`.
+    - Any keys missing from `loaded_params` that match `missing_regex` are filled from `ref_params`.
+    """
+    return _merge_params(loaded_params, ref_params, missing_regex=missing_regex)
+
+
+def override_params_by_regex(
+    base_params: at.Params, overlay_params: at.Params, *, allow_regex: str
+) -> at.Params:
+    """Override a subset of params (selected by regex) from overlay into base.
+
+    Only keys that:
+    - match `allow_regex`, AND
+    - exist in both base and overlay
+    will be overridden.
+    """
+    pattern = re.compile(allow_regex)
+    flat_base = flax.traverse_util.flatten_dict(base_params, sep="/")
+    flat_overlay = flax.traverse_util.flatten_dict(overlay_params, sep="/")
+
+    for k, base_v in list(flat_base.items()):
+        if not pattern.fullmatch(k):
+            continue
+        if k not in flat_overlay:
+            continue
+        ov = flat_overlay[k]
+        flat_base[k] = ov.astype(base_v.dtype) if getattr(ov, "dtype", None) is not None and ov.dtype != base_v.dtype else ov
+
+    return flax.traverse_util.unflatten_dict(flat_base, sep="/")

@@ -1,0 +1,1530 @@
+"""See _CONFIGS for the list of available configs."""
+
+import abc
+from collections.abc import Sequence
+import dataclasses
+import difflib
+import logging
+import pathlib
+from typing import Any, Literal, Protocol, TypeAlias
+
+import etils.epath as epath
+import flax.nnx as nnx
+from typing_extensions import override
+import tyro
+
+import openpi.models.model as _model
+import openpi.models.pi0_config as pi0_config
+import openpi.models.pi0_fast as pi0_fast
+import openpi.models.tokenizer as _tokenizer
+import openpi.policies.libero_policy as libero_policy
+import openpi.shared.download as _download
+import openpi.shared.normalize as _normalize
+from openpi.shared.tactile_type import TactileType
+import openpi.training.misc.roboarena_config as roboarena_config
+import openpi.training.optimizer as _optimizer
+import openpi.training.weight_loaders as weight_loaders
+import openpi.transforms as _transforms
+
+ModelType: TypeAlias = _model.ModelType
+
+# 全局触觉 / 力 loss 权重（用于 EXPRT_HIS_C_FUT：total_loss = action_loss + w * tactile_loss）
+TACTILE_LOSS_WEIGHT: float = 0.1
+# Tabero / 力矩相关实验使用的统一 tactile 历史长度（单位：帧数）。
+TABERO_TACTILE_HISTORY: int = 8
+# Work around a tyro issue with using nnx.filterlib.Filter directly.
+Filter: TypeAlias = nnx.filterlib.Filter
+
+
+@dataclasses.dataclass(frozen=True)
+class AssetsConfig:
+    """Determines the location of assets (e.g., norm stats) that will be used to set up the data pipeline.
+
+    These assets will be replicated inside the checkpoint under the `assets/asset_id` directory.
+
+    This can be used to load assets from a different checkpoint (e.g., base model checkpoint) or some other
+    centralized location. For example, to load the norm stats for the Trossen robot from the base model checkpoint
+    during fine-tuning, use:
+
+    ```
+    AssetsConfig(
+        assets_dir="gs://openpi-assets/checkpoints/pi0_base/assets",
+        asset_id="trossen",
+    )
+    ```
+    """
+
+    # Assets directory. If not provided, the config assets_dirs will be used. This is useful to load assets from
+    # a different checkpoint (e.g., base model checkpoint) or some other centralized location.
+    assets_dir: str | None = None
+
+    # Asset id. If not provided, the repo id will be used. This allows users to reference assets that describe
+    # different robot platforms.
+    asset_id: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class DataConfig:
+    # LeRobot repo id. If None, fake data will be created.
+    repo_id: str | None = None
+    # Directory within the assets directory containing the data assets.
+    asset_id: str | None = None
+    # Contains precomputed normalization stats. If None, normalization will not be performed.
+    norm_stats: dict[str, _transforms.NormStats] | None = None
+
+    # Used to adopt the inputs from a dataset specific format to a common format
+    # which is expected by the data transforms.
+    repack_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
+    # Data transforms, typically include robot specific transformations. Will be applied
+    # before the data is normalized. See `model.Observation` and `model.Actions` to learn about the
+    # normalized data.
+    data_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
+    # Model specific transforms. Will be applied after the data is normalized.
+    model_transforms: _transforms.Group = dataclasses.field(default_factory=_transforms.Group)
+    # If true, will use quantile normalization. Otherwise, normal z-score normalization will be used.
+    use_quantile_norm: bool = False
+
+    # Names of keys that will be used by the data loader to generate the action sequence. The length of the
+    # sequence is defined by the `action_horizon` field in the model config. This should be adjusted if your
+    # LeRobot dataset is using different keys to represent the action.
+    action_sequence_keys: Sequence[str] = ("actions",)
+
+    # If true, will use the LeRobot dataset task to define the prompt.
+    prompt_from_task: bool = False
+
+    # Optional Hugging Face git revision for `lerobot.datasets.LeRobotDataset` (branch, tag, or commit).
+    # Use when the dataset repo has no `v*` version tag (LeRobot defaults to a semver and calls
+    # `get_safe_version`, which requires such a tag). Example: the branch name main.
+    lerobot_revision: str | None = None
+
+    rlds_data_dir: str | None = None
+    filter_dict_path: str | None = None
+
+
+class GroupFactory(Protocol):
+    def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        """Create a group."""
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelTransformFactory(GroupFactory):
+    """Creates model transforms for standard pi0 models."""
+
+    # If provided, will determine the default prompt that be used by the model.
+    default_prompt: str | None = None
+
+    def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
+        match model_config.model_type:
+            case _model.ModelType.PI0:
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizePrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                        ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
+                    ],
+                )
+            case _model.ModelType.PI05:
+                assert isinstance(model_config, pi0_config.Pi0Config)
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizePrompt(
+                            _tokenizer.PaligemmaTokenizer(model_config.max_token_len),
+                            discrete_state_input=model_config.discrete_state_input,
+                        ),
+                        _transforms.PadStatesAndActions(model_config.action_dim),
+                    ],
+                )
+            case _model.ModelType.PI0_FAST:
+                tokenizer_cls = (
+                    _tokenizer.FASTTokenizer
+                    if model_config.fast_model_tokenizer is None
+                    else model_config.fast_model_tokenizer
+                )
+                tokenizer_kwargs = (
+                    {} if model_config.fast_model_tokenizer_kwargs is None else model_config.fast_model_tokenizer_kwargs
+                )
+                return _transforms.Group(
+                    inputs=[
+                        _transforms.InjectDefaultPrompt(self.default_prompt),
+                        _transforms.ResizeImages(224, 224),
+                        _transforms.TokenizeFASTInputs(
+                            tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
+                        ),
+                    ],
+                    outputs=[
+                        _transforms.ExtractFASTActions(
+                            tokenizer_cls(model_config.max_token_len, **tokenizer_kwargs),
+                            action_horizon=model_config.action_horizon,
+                            action_dim=model_config.action_dim,
+                        )
+                    ],
+                )
+
+
+@dataclasses.dataclass(frozen=True)
+class DataConfigFactory(abc.ABC):
+    # The LeRobot repo id.
+    repo_id: str = tyro.MISSING
+    # Determines how the assets will be loaded.
+    assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
+    # Base config that will be updated by the factory.
+    base_config: tyro.conf.Suppress[DataConfig | None] = None
+
+    @abc.abstractmethod
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        """Create a data config."""
+
+    def create_base_config(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # NOTE:
+        # Some configs (e.g. SimpleDataConfig) may specify `repo_id` via `base_config=DataConfig(repo_id=...)`
+        # instead of setting `DataConfigFactory.repo_id` directly. In that case we must NOT override it with None.
+        base = self.base_config or DataConfig()
+        repo_id = self.repo_id if self.repo_id is not tyro.MISSING else base.repo_id
+        asset_id = self.assets.asset_id or base.asset_id or repo_id
+        return dataclasses.replace(
+            base,
+            repo_id=repo_id,
+            asset_id=asset_id,
+            norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
+            use_quantile_norm=model_config.model_type != ModelType.PI0,
+        )
+
+    def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
+        if asset_id is None:
+            return None
+        try:
+            data_assets_dir = str(assets_dir / asset_id)
+            norm_stats = _normalize.load(_download.maybe_download(data_assets_dir))
+            logging.info(f"Loaded norm stats from {data_assets_dir}")
+            return norm_stats
+        except FileNotFoundError:
+            logging.info(f"Norm stats not found in {data_assets_dir}, skipping.")
+        return None
+
+
+@dataclasses.dataclass(frozen=True)
+class FakeDataConfig(DataConfigFactory):
+    repo_id: str = "fake"
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        return DataConfig(repo_id=self.repo_id)
+
+
+@dataclasses.dataclass(frozen=True)
+class SimpleDataConfig(DataConfigFactory):
+    # Factory for the data transforms.
+    data_transforms: tyro.conf.Suppress[GroupFactory] = dataclasses.field(default_factory=GroupFactory)
+    # Factory for the model transforms.
+    model_transforms: tyro.conf.Suppress[GroupFactory] = dataclasses.field(default_factory=ModelTransformFactory)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=self.data_transforms(model_config),
+            model_transforms=self.model_transforms(model_config),
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotLiberoDataConfig(DataConfigFactory):
+    """
+    This config is used to configure transforms that are applied at various parts of the data pipeline.
+    For your own dataset, you can copy this class and modify the transforms to match your dataset based on the
+    comments below.
+    """
+
+    extra_delta_transform: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # The repack transform is *only* applied to the data coming from the dataset,
+        # and *not* during inference. We can use it to make inputs from the dataset look
+        # as close as possible to those coming from the inference environment (e.g. match the keys).
+        # Below, we match the keys in the dataset (which we defined in the data conversion script) to
+        # the keys we use in our inference pipeline (defined in the inference script for libero).
+        # For your own dataset, first figure out what keys your environment passes to the policy server
+        # and then modify the mappings below so your dataset's keys get matched to those target keys.
+        # The repack transform simply remaps key names here.
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image": "wrist_image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        # The data transforms are applied to the data coming from the dataset *and* during inference.
+        # Below, we define the transforms for data going into the model (``inputs``) and the transforms
+        # for data coming out of the model (``outputs``) (the latter is only used during inference).
+        # We defined these transforms in `libero_policy.py`. You can check the detailed comments there for
+        # how to modify the transforms to match your dataset. Once you created your own transforms, you can
+        # replace the transforms below with your own.
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.LiberoInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoOutputs()],
+        )
+
+        # One additional data transform: pi0 models are trained on delta actions (relative to the first
+        # state in each action chunk). IF your data has ``absolute`` actions (e.g. target joint angles)
+        # you can uncomment the following line to convert the actions to delta actions. The only exception
+        # is for the gripper actions which are always absolute.
+        # In the example below, we would apply the delta conversion to the first 6 actions (joints) and
+        # leave the 7th action (gripper) unchanged, i.e. absolute.
+        # In Libero, the raw actions in the dataset are already delta actions, so we *do not* need to
+        # apply a separate delta conversion (that's why it's commented out). Choose whether to apply this
+        # transform based on whether your dataset uses ``absolute`` or ``delta`` actions out of the box.
+
+        # LIBERO already represents actions as deltas, but we have some old Pi0 checkpoints that are trained with this
+        # extra delta transform.
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        # Model transforms include things like tokenizing the prompt and action targets
+        # You do not need to change anything here for your own dataset.
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotLiberoTactileDataConfig(DataConfigFactory):
+    """
+    Libero 数据配置（带 gripper_force 作为 tactile）。
+
+    在标准 `LeRobotLiberoDataConfig` 的基础上，将多帧 `observation/gripper_force`
+    透传到后续 policy transform，并最终映射为 `Observation.tactile`。
+    """
+
+    extra_delta_transform: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image": "wrist_image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                        # 额外：把多帧 gripper_force 转发出来
+                        "observation/gripper_force": "gripper_force",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.LiberoInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoForceOutputs()]
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoTacImgDataConfig(DataConfigFactory):
+    """
+    Tabero（三路图像 + 13D 动作，无 tactile）数据配置。
+
+    - 图像：observation/image, observation/wrist_image, observation/tactile_image
+      通过 TaberoTacImgInputs 映射到 3 路视觉 token。
+    - 动作：13 维（7 关节 + 6 力），经 PadStatesAndActions padding 到 32 维。
+    """
+
+    extra_delta_transform: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # 直接使用 Tabero 的 LeRobot 格式（observation/...），不做 repack。
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.TaberoTacImgInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoForceOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoTacFieldDataConfig(DataConfigFactory):
+    """
+    Tabero（两路图像 + 触觉力场 + 13D 动作）数据配置。
+
+    - 图像：observation/image, observation/wrist_image
+    - 触觉力场：observation/tactile_gripper_force（优先）或 observation/gripper_force
+      直接映射为 Observation.tactile，后续在模型内部 flatten+MLP 得到 tactile token。
+    """
+
+    extra_delta_transform: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.TaberoTacFieldInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoForceOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            # 与 TaberoTacImgDataConfig / TaberoTacForceDataConfig 保持一致：
+            # 对后 6 维力做 DeltaActions + AbsoluteActions 的 delta transform。
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoTacForceDataConfig(DataConfigFactory):
+    """
+    Tabero（两路图像 + 8×6 指力历史 + 13D 动作）数据配置。
+
+    - 图像：image, wrist_image
+    - 指力历史：tactile_gripper_force（或 observation/tactile_gripper_force / observation/gripper_force）
+      直接作为 Observation.tactile（[*b, n, e]）输入，用于 EXPERT_HIS_C_FUT 的“历史指力 token”。
+    """
+
+    extra_delta_transform: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.TaberoTacForceInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoForceOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoTacForceEncDataConfig(DataConfigFactory):
+    """
+    Tabero（两路图像 + 8×6 指力历史，作为 encoder-prefix tactile + 13D 动作）数据配置。
+
+    与 `TaberoTacForceDataConfig` 的区别：
+    - 指力历史写入 Observation.tactile_prefix（prefix-only），用于 encoder-prefix 条件；
+    - 适配 `tactile_streams=("tactile_prefix",)` 的模型配置。
+    """
+
+    extra_delta_transform: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.TaberoTacForceEncInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoForceOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoTacAllDataConfig(DataConfigFactory):
+    """
+    Tabero（3 路图像 + 触觉力场 marker_motion/指力 + 13D 动作）数据配置。
+
+    - 图像：
+        - image                  -> base_0_rgb
+        - wrist_image            -> left_wrist_0_rgb
+        - tactile_image          -> right_wrist_0_rgb
+    - 触觉：
+        - 推荐：tactile_marker_motion（如 [9, 198, 2]），在 `TaberoTacAllInputs` 中 reshape 成 [9, 198*2]，
+          作为 Observation.tactile 喂给模型，在模型端使用 TCN 编码为单个 tactile token；
+        - 兼容：tactile_gripper_force / observation/tactile_gripper_force / observation/gripper_force，
+          在无 marker_motion 时退化为 tacforce 风格的 8×6 指力历史。
+    """
+
+    extra_delta_transform: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.TaberoTacAllInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.LiberoForceOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoNoTactNoForceDataConfig(DataConfigFactory):
+    """
+    Tabero（多路图像 + 只用 7D 关节动作，不使用任何 tactile / 指力）的数据配置。
+
+    - 图像：只用 image / wrist_image；第三路 right_wrist_0_rgb 用零图 + mask=False（与原始 LiberoInputs 一致）
+    - 动作：原始 13D（7 关节 + 6 力）在这里通过 SliceActions(7) 截断为 7D，只训练关节，
+      后 6 维力完全从 loss 中“屏蔽掉”，行为与原始 pi0_libero_wo_force 类似。
+    """
+
+    extra_delta_transform: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                # 只用两路图像（image / wrist_image）+ state + 13D actions，从 Tabero v2.1 扁平格式读入，
+                # 不读取 tactile_image / tactile_force 等任何触觉模态。
+                libero_policy.TaberoNoTactInputs(model_type=model_config.model_type),
+                # 将动作截断为前 7 维（关节），彻底丢弃后 6 维指力。
+                _transforms.SliceActions(7),
+            ],
+            outputs=[libero_policy.LiberoOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoNoTactForceDataConfig(DataConfigFactory):
+    """
+    Tabero（纯视觉两路图像 + 13D 动作/力预测，不使用任何 tactile token / tactile 图像）。
+
+    与 `TaberoNoTactNoForceDataConfig` 的唯一区别：
+    - 不再 SliceActions(7)，而是保留原始 13D（7 关节 + 6 力）用于训练监督与推理输出；
+    - 输出使用 `LiberoForceOutputs()`，只返回前 13 维。
+
+    图像侧仍与 notac 一致：
+    - 只读 image / wrist_image；
+    - 第三路 right_wrist_0_rgb 用零图 + mask=False（PI0 下默认 mask 掉）。
+    """
+
+    extra_delta_transform: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                # 只用两路图像（image / wrist_image）+ state + 13D actions，不读取 tactile_image / tactile_force 等任何触觉模态。
+                libero_policy.TaberoNoTactInputs(model_type=model_config.model_type),
+            ],
+            outputs=[libero_policy.LiberoForceOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotLiberoNoTactileDataConfig(DataConfigFactory):
+    """Libero 数据配置（不使用 gripper_force / tactile，只保留前 7 维动作）。"""
+
+    extra_delta_transform: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # 与 LeRobotLiberoDataConfig 相同的 repack，只是不再转发 gripper_force。
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image": "wrist_image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        # 数据流：LiberoInputs 负责 key 适配与 padding，SliceActions(7) 将动作截断到前 7 维。
+        data_transforms = _transforms.Group(
+            inputs=[
+                libero_policy.LiberoInputs(model_type=model_config.model_type),
+                _transforms.SliceActions(7),
+            ],
+            outputs=[libero_policy.LiberoOutputs()],
+        )
+
+        if self.extra_delta_transform:
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TrainConfig:
+    # Name of the config. Must be unique. Will be used to reference this config.
+    name: tyro.conf.Suppress[str]
+    # Project name.
+    project_name: str = "openpi"
+    # Experiment name. Will be used to name the metadata and checkpoint directories.
+    exp_name: str = tyro.MISSING
+
+    # Defines the model config. Some attributes (action_dim, action_horizon, and max_token_len) are shared by all models
+    # -- see BaseModelConfig. Specific model implementations (e.g., Pi0Config) inherit from BaseModelConfig and may
+    # define additional attributes.
+    model: _model.BaseModelConfig = dataclasses.field(default_factory=pi0_config.Pi0Config)
+
+    # A weight loader can optionally load (possibly partial) weights from disk after the model is initialized.
+    weight_loader: weight_loaders.WeightLoader = dataclasses.field(default_factory=weight_loaders.NoOpWeightLoader)
+
+    # Optional path to a PyTorch checkpoint to load weights from.
+    pytorch_weight_path: str | None = None
+
+    # Precision for PyTorch training.
+    pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+
+    lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
+    optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
+    ema_decay: float | None = 0.99
+
+    # Specifies which weights should be frozen.
+    freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
+
+    # Determines the data to be trained on.
+    data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
+
+    # Base directory for config assets (e.g., norm stats).
+    assets_base_dir: str = "./assets"
+    # Base directory for checkpoints.
+    checkpoint_base_dir: str = "./checkpoints"
+
+    # Random seed that will be used by random generators during training.
+    seed: int = 42
+    # Global batch size.
+    batch_size: int = 32
+    # Number of workers to use for the data loader. Increasing this number will speed up data loading but
+    # will increase memory and CPU usage.
+    num_workers: int = 2
+    # Number of train steps (batches) to run.
+    num_train_steps: int = 30_000
+
+    # How often (in steps) to log training metrics.
+    log_interval: int = 100
+    # How often (in steps) to save checkpoints.
+    save_interval: int = 1000
+    # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
+    keep_period: int | None = 5000
+
+    # If true, will overwrite the checkpoint directory if it already exists.
+    overwrite: bool = False
+    # If true, will resume training from the last checkpoint.
+    resume: bool = False
+
+    # If true, will enable wandb logging.
+    wandb_enabled: bool = True
+
+    # Used to pass metadata to the policy server.
+    policy_metadata: dict[str, Any] | None = None
+
+    # If the value is greater than 1, FSDP will be enabled and shard across number of specified devices; overall
+    # device memory will be reduced but training could potentially be slower.
+    # eg. if total device is 4 and fsdp devices is 2; then the model will shard to 2 devices and run
+    # data parallel between 2 groups of devices.
+    fsdp_devices: int = 1
+
+    @property
+    def assets_dirs(self) -> pathlib.Path:
+        """Get the assets directory for this config."""
+        return (pathlib.Path(self.assets_base_dir) / self.name).resolve()
+
+    @property
+    def checkpoint_dir(self) -> pathlib.Path:
+        """Get the checkpoint directory for this config."""
+        if not self.exp_name:
+            raise ValueError("--exp_name must be set")
+        return (pathlib.Path(self.checkpoint_base_dir) / self.name / self.exp_name).resolve()
+
+    @property
+    def trainable_filter(self) -> nnx.filterlib.Filter:
+        """Get the filter for the trainable parameters."""
+        return nnx.All(nnx.Param, nnx.Not(self.freeze_filter))
+
+    def __post_init__(self) -> None:
+        if self.resume and self.overwrite:
+            raise ValueError("Cannot resume and overwrite at the same time.")
+
+
+# Use `get_config` if you need to get a config by name in your code.
+_CONFIGS = [
+    #
+    # Fine-tuning Libero configs.
+    #
+    # These train configs define the hyperparameters for fine-tuning the base model on your own dataset.
+    # They are used to define key elements like the dataset you are training on, the base checkpoint you
+    # are using, and other hyperparameters like how many training steps to run or what learning rate to use.
+    # For your own dataset, you can copy this class and modify the dataset name, and data transforms based on
+    # the comments below.
+    TrainConfig(
+        # Change the name to reflect your model and dataset.
+        name="pi0_libero",
+        # Here you define the model config -- In this example we use pi0 as the model
+        # architecture and perform *full* finetuning. in the examples below we show how to modify
+        # this to perform *low-memory* (LORA) finetuning and use pi0-FAST as an alternative architecture.
+        model=pi0_config.Pi0Config(),
+        # Here you define the dataset you are training on. In this example we use the Libero
+        # dataset. For your own dataset, you can change the repo_id to point to your dataset.
+        # Also modify the DataConfig to use the new config you made for your dataset above.
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(
+                # This flag determines whether we load the prompt (i.e. the task instruction) from the
+                # ``task`` field in the LeRobot dataset. If set to True, the prompt will show up in
+                # a field called ``prompt`` in the input dict. The recommended setting is True.
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        # Here you define which pre-trained checkpoint you want to load to initialize the model.
+        # This should match the model config you chose above -- i.e. in this case we use the pi0 base model.
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
+        # Check the base TrainConfig class for a full list of available hyperparameters.
+        num_train_steps=30_000,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacimg_tabero",
+        # 三路图像（image / wrist_image / tactile_image），13 维动作（7 关节 + 6 力），
+        # 不使用历史 tactile token，但在 loss 里仍对 [关节 vs 力] 做加权（0.1 * tactile_loss）。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            # 数据中真实有效动作维度为 13，其余通过 PadStatesAndActions padding。
+            effective_action_dim=13,
+            # 启用 EXPERT_HIS_C_FUT 的 loss 拆分逻辑，但 Observation.tactile 为空，
+            # 所以只做 [前 7 维动作 + 后 6 维力] 的加权监督，不注入 tactile token。
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # tactile_dim_in=0 表示不需要 tactile token 的 Linear 投影，只启用 loss 拆分逻辑，
+            # 既避免引入新的权重，又保持和原有 checkpoint 的结构兼容。
+            tactile_dim_in=0,
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+        ),
+        data=TaberoTacImgDataConfig(
+            # 你的原始 Tabero 数据集（含 tactile_image / tactile_gripper_force 等字段）。
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                # 如果在 LeRobot meta 里有 tasks 信息，可以启用从 task 里自动生成 prompt。
+                prompt_from_task=True,
+            ),
+            # 与当前 pi0_libero_force 配置保持一致，额外做一次 delta transform。
+            extra_delta_transform=True,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        # 使用官方 pi0 base checkpoint 初始化，再做 LoRA 微调。
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacimgwo_tabero",
+        # 三路图像（image / wrist_image / tactile_image），动作仍为 13 维（7 关节 + 6 力），
+        # 但训练时只监督前 7 维关节动作（将力段 loss 权重设为 0）。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            tactile_dim_in=0,
+            # 关键：关闭力段（后 6 维）的监督。
+            tactile_loss_weight=0.0,
+        ),
+        data=TaberoTacImgDataConfig(
+            repo_id="NathanWu7/tabero_object_25",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacall_tabero",
+        # 三路图像（image / wrist_image / tactile_image）+ tacfield（marker_motion）+ tacforce（8×6 指力）+ 13 维动作/力。
+        #
+        # 设计目标（双触觉通道）：
+        # - tacimg：第三路 tactile_image 作为额外视觉模态，仅在图像侧修改字段；
+        # - tacfield（encoder 前缀通道）：tactile_marker_motion 走 TCN 编码路径，作为 prefix tactile token；
+        # - tacforce（decoder 后缀通道）：8×6 指力历史沿用原版 tacforce 的 MLP 通道；
+        # - 动作：仍为 13 维（7 关节 + 6 力），在 loss 中按 [动作, 力] 拆分并对力做加权监督。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            # 13 维 = 7 关节 + 6 力。
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # 启用双触觉通道：
+            # - suffix 通道（tactile_suffix）：沿用原版 tacforce（8×6 指力，经 MLP 编码，仅进 decoder）；
+            # - prefix 通道（tactile_prefix）：沿用 tacfield（9 帧 marker，经 TCN 编码，仅进 encoder）。
+            tactile_streams=("tactile_suffix", "tactile_prefix"),
+            # 将 tacforce（tactile_suffix）编码后的 token 放到 prefix 序列里（与 tacfield 同为 prefix 条件）。
+            # 其他保持不变；tacfield 仍然走 tactile_prefix（prefix）。
+            tactile_suffix_placement="prefix",
+            # decoder-suffix：tacforce（8×6 gripper force），flatten 成 8*6，经 MLP 编码。
+            tactile_dim_in=8 * 6,
+            tactile_history=TABERO_TACTILE_HISTORY,
+            tactile_encoder_type="mlp",
+            tactile_use_reference_frame=False,
+            tactile_diff_from_reference=True,
+            # encoder-prefix：tacfield（9 帧 marker motion），reshape 成 [9, 198*2]，经 TCN 编码。
+            tactile_prefix_dim_in=9 * 198 * 2,
+            tactile_prefix_history=TABERO_TACTILE_HISTORY,
+            tactile_prefix_encoder_type="tcn",
+            tactile_prefix_use_reference_frame=True,
+            tactile_prefix_diff_from_reference=False,
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoTacAllDataConfig(
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        # 仍然使用 pi0 base checkpoint 初始化，新增的 tactile_proj_* / TCN 参数在 checkpoint 中不存在，
+        # 通过 missing_regex=".*" 允许它们保持随机初始化。
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_notac_tabero",
+        # Tabero 纯视觉基线（标准 Pi0）：
+        # - 图像：只用两路（image / wrist_image）；第三路 right_wrist_0_rgb 用零图并在 PI0 下默认 mask 掉
+        #   （TaberoNoTactInputs：right_wrist_0_rgb = 0, image_mask=False）。
+        # - 动作：仅训练前 7 维关节动作（SliceActions(7)），不做任何力/触觉预测或监督。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoNoTactNoForceDataConfig(
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_notac_bin_tabero",
+        # 与 `pi0_lora_notac_tabero` 完全一致，仅更换数据集为 tabero_binary。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoNoTactNoForceDataConfig(
+            repo_id="NathanWu7/tabero_binary",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacpred_tabero",
+        # Tabero 纯视觉（与 notac 一致）但预测 13D 动作/力：
+        # - 图像：只用两路（image / wrist_image）；第三路 right_wrist_0_rgb 用零图并在 PI0 下默认 mask 掉。
+        # - 不读取任何 tactile_* 字段，也不注入 tactile token（tactile_dim_in=0 / tactile_streams=()）。
+        # - 训练/推理输出：前 13 维（7 关节 + 6 力），并对力段做加权监督（TACTILE_LOSS_WEIGHT）。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # 不创建任何 tactile tokenizer 权重，仅使用 EXPERT_HIS_C_FUT 的 loss 拆分逻辑。
+            tactile_dim_in=0,
+            tactile_streams=(),
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoNoTactForceDataConfig(
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_lora_tacimg_tabero",
+        # Pi05 + LoRA：三路图像（image / wrist_image / tactile_image），13 维动作（7 关节 + 6 力），
+        # 不注入任何 tactile token，但在 loss 里对 [关节 vs 力] 做加权（tactile_loss_weight）。
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            # 发布的 checkpoint 仅在第一个 expert（PaliGemma）上带 LoRA；
+            # action expert 分支保存的是普通 gemma_300m 权重。
+            action_expert_variant="gemma_300m_lora",
+            discrete_state_input=True,
+            # 数据中真实有效动作维度为 13，其余通过 PadStatesAndActions padding。
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # 不创建 tactile token 相关权重，只启用 loss 拆分逻辑。
+            tactile_dim_in=0,
+            tactile_streams=(),
+            tactile_loss_weight=0.01,
+        ),
+        data=TaberoTacImgDataConfig(
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=2.5e-5,
+            decay_steps=1_000_000,
+            decay_lr=2.5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=True,
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_lora_tacfield_tabero",
+        # Pi05 + LoRA：两路图像（image / wrist_image）+ tacfield（marker_motion，encoder-prefix）+ 13 维动作/力。
+        # - tacfield：走 TCN 编码路径，作为 encoder-prefix tactile token；
+        # - 动作：仍为 13 维（7 关节 + 6 力），在 loss 中按 [动作, 力] 拆分并对力做加权监督。
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            discrete_state_input=True,
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # prefix-only：tacfield 作为 encoder-prefix token，suffix 不创建 tactile encoder。
+            tactile_dim_in=0,
+            tactile_prefix_dim_in=9 * 198 * 2,
+            tactile_prefix_history=TABERO_TACTILE_HISTORY,
+            tactile_prefix_encoder_type="tcn",
+            tactile_prefix_use_reference_frame=True,
+            tactile_prefix_diff_from_reference=False,
+            tactile_streams=("tactile_prefix",),
+            tactile_loss_weight=0.01,
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=2.5e-5,
+            decay_steps=1_000_000,
+            decay_lr=2.5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        data=TaberoTacFieldDataConfig(
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        # 新增的 tactile_prefix_encoder（TCN）参数在 base checkpoint 里不存在，允许缺失。
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=True,
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi05_lora_tacforce_tabero",
+        # Pi05 + LoRA：两路图像（image / wrist_image）+ tacforce（8×6 指力历史，encoder-prefix）+ 13 维动作/力。
+        #
+        # 注意：你要求的 “force 在 encoder 部分” 对应这里的 prefix-only 配置：
+        # - tactile_prefix_*：8×6 指力历史只作为 encoder-prefix token；
+        # - tactile_dim_in=0：suffix 不创建 tactile encoder。
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            discrete_state_input=True,
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            tactile_dim_in=0,
+            tactile_prefix_dim_in=8 * 6,
+            tactile_prefix_history=TABERO_TACTILE_HISTORY,
+            tactile_prefix_encoder_type="mlp",
+            tactile_prefix_use_reference_frame=False,
+            tactile_prefix_diff_from_reference=True,
+            tactile_streams=("tactile_prefix",),
+            tactile_loss_weight=0.01,
+        ),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=2.5e-5,
+            decay_steps=1_000_000,
+            decay_lr=2.5e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        data=TaberoTacForceEncDataConfig(
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        # 新增的 tactile_prefix_encoder（MLP）参数在 base checkpoint 里不存在，允许缺失。
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params",
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            discrete_state_input=True,
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacfield_tabero",
+        # 两路图像（image / wrist_image）+ 触觉力场 tactile（8×6）+ 13 维未来动作/力联合预测。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            # 13 维 = 7 关节 + 6 力，loss 内部按 [动作, 力] 维度切分。
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # prefix：Tabero 力场 marker_motion，形状 [9, 198, 2] → reshape 成 [9, 198*2]，走 TCN。
+            # 注意：这里是 encoder-prefix 通道，因此使用 tactile_prefix_* 字段显式配置；
+            # 同时关闭 suffix tactile encoder（tactile_dim_in=0）。
+            tactile_dim_in=0,
+            tactile_prefix_dim_in=9 * 198 * 2,
+            tactile_prefix_history=TABERO_TACTILE_HISTORY,
+            tactile_prefix_encoder_type="tcn",
+            tactile_prefix_use_reference_frame=True,
+            tactile_prefix_diff_from_reference=False,
+            # 只启用 encoder-prefix 触觉通道（tacfield）。
+            tactile_streams=("tactile_prefix",),
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoTacFieldDataConfig(
+            repo_id="NathanWu7/tabero_object_25",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+            # 新增的 tactile_proj_* 参数在 base checkpoint 里不存在，允许缺失。
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacfieldwo_tabero",
+        # 两路图像（image / wrist_image）+ tacfield（marker_motion，encoder-prefix）作为条件，
+        # 动作仍为 13 维（7 关节 + 6 力），但训练时只监督前 7 维关节动作（将力段 loss 权重设为 0）。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            tactile_dim_in=0,
+            tactile_prefix_dim_in=9 * 198 * 2,
+            tactile_prefix_history=TABERO_TACTILE_HISTORY,
+            tactile_prefix_encoder_type="tcn",
+            tactile_prefix_use_reference_frame=True,
+            tactile_prefix_diff_from_reference=False,
+            tactile_streams=("tactile_prefix",),
+            # 关键：关闭力段（后 6 维）的监督。
+            tactile_loss_weight=0.0,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoTacFieldDataConfig(
+            repo_id="NathanWu7/tabero_object_25",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacforce_tabero",
+        # 两路图像（image / wrist_image）+ 8×6 指力历史 tactile + 13 维未来动作/力联合预测。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            # 13 维 = 7 关节 + 6 力，loss 内部按 [动作, 力] 维度切分并对力做 0.1 加权。
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # 指力历史：tactile_gripper_force 形状约为 [8, 6]，在模型内部 flatten 成 8*6。
+            tactile_dim_in=8 * 6,
+            # 显式设定历史长度为 TABERO_TACTILE_HISTORY（无显式基准帧，仅时间窗长度）。
+            tactile_history=TABERO_TACTILE_HISTORY,
+            # 只启用 decoder-suffix 触觉通道（tacforce 指力历史）。
+            tactile_streams=("tactile_suffix",),
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoTacForceDataConfig(
+            repo_id="NathanWu7/tabero_object_25",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacforce_tabero_enc",
+        # 两路图像（image / wrist_image）+ 8×6 指力历史（作为 encoder-prefix 条件）+ 13 维未来动作/力联合预测。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            # prefix-only：8×6 指力历史只作为 encoder-prefix token，suffix 不创建 tactile encoder。
+            tactile_dim_in=0,
+            tactile_prefix_dim_in=8 * 6,
+            tactile_prefix_history=TABERO_TACTILE_HISTORY,
+            tactile_prefix_encoder_type="mlp",
+            tactile_prefix_use_reference_frame=False,
+            tactile_prefix_diff_from_reference=True,
+            tactile_streams=("tactile_prefix",),
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoTacForceEncDataConfig(
+            repo_id="NathanWu7/tabero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_tacforcewo_tabero",
+        # 两路图像（image / wrist_image）+ tacforce（8×6 指力历史，encoder-prefix）作为条件，
+        # 动作仍为 13 维（7 关节 + 6 力），但训练时只监督前 7 维关节动作（将力段 loss 权重设为 0）。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            tactile_dim_in=0,
+            tactile_prefix_dim_in=8 * 6,
+            tactile_prefix_history=TABERO_TACTILE_HISTORY,
+            tactile_prefix_encoder_type="mlp",
+            tactile_prefix_use_reference_frame=False,
+            tactile_prefix_diff_from_reference=True,
+            tactile_streams=("tactile_prefix",),
+            # 关键：关闭力段（后 6 维）的监督。
+            tactile_loss_weight=0.0,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=TaberoTacForceEncDataConfig(
+            repo_id="NathanWu7/tabero_object_25",
+            base_config=DataConfig(
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+            missing_regex=".*",
+        ),
+        num_train_steps=50_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_noforce_taforce",
+        # 与 pi0_libero_low_mem_finetune 使用相同的 LoRA 配置，但在 Tabero 力矩数据上
+        # 只使用前 7 维关节动作，不使用 tactile。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            # 使用与 force 版相同的 EXPERT_HIS_C_FUT loss 拆分逻辑，但关闭力的监督：
+            # - effective_action_dim=13：前 7 维是真实关节动作，后 6 维作为“力槽位”；
+            # - tactile_type=EXPERT_HIS_C_FUT：在 compute_loss 中按 [7 动作 + 6 力] 拆分；
+            # - tactile_dim_in=0：不创建 tactile token 相关 Linear，只启用 loss 拆分逻辑；
+            # - tactile_loss_weight=0.0：力的 loss 权重为 0，只剩 7 维动作 loss。
+            effective_action_dim=13,
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            tactile_dim_in=0,
+            # 显式指定：不启用任何 tactile token 通道，仅做 13 维动作+力的 loss 拆分。
+            tactile_streams=(),
+            tactile_loss_weight=0.0,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=LeRobotLiberoNoTactileDataConfig(
+            repo_id="NathanWu7/tabero_force",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+    TrainConfig(
+        name="pi0_lora_force_taforce",
+        # 带力矩历史 + 未来动作/力联合预测的 LoRA 微调配置。
+        model=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+            # 你当前数据里 action = 7 动作 + 6 力，一共 13 维。
+            # 模型内部 action_dim 仍然保持 32（与官方 checkpoint 对齐），
+            # 但通过 effective_action_dim=13 告诉模型：前 13 维才是“有语义的”，
+            # 其中前 7 维是动作，第 8–13 维是力矩，其余视为 padding。
+            effective_action_dim=13,
+            # 与 pi0_libero_low_mem_finetune 保持一致，沿用基线的 action_horizon=50。
+            # 启用我们实现的 EXPERT_HIS_C_FUT 模式：
+            # - 历史力来自 gripper_force[8,6]，flatten 后经 MLP 做 expert token；
+            # - 未来动作/力直接从 actions 的 13 维中学习（前 7 维动作，后 6 维力）。
+            tactile_type=TactileType.EXPERT_HIS_C_FUT,
+            tactile_dim=6,
+            tactile_dim_in=8 * 6,  # gripper_force 的 8 帧历史 * 6 维
+            tactile_history=TABERO_TACTILE_HISTORY,
+            tactile_streams=("tactile_suffix",),
+            # 力 / 触觉 loss 的权重，可以在这里直接修改（默认 0.1）。
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            peak_lr=2.5e-5,
+            decay_lr=2.5e-6,
+        ),
+        data=LeRobotLiberoTactileDataConfig(
+            # 使用你在 Hugging Face 上的 LeRobot 数据集仓库作为 repo_id。
+            # 这里直接填 HF Hub 的 dataset id，DataLoader 会通过 fsspec 拉取数据。
+            repo_id="NathanWu7/tabero_force",
+            # 这里不再强制指定本地 assets_dir，norm_stats 训练后会先保存在本地
+            #   ./assets/pi0_libero_force_low_mem_finetune/NathanWu7_tabero_force/...
+            # 然后你可以把这整个目录和 checkpoint 一起上传到同一个 HF 仓库。
+            base_config=DataConfig(
+                # 你的数据里如果没有 task->prompt，这里可以保持 False；有的话可以改成 True。
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+        ),
+        # 注意：这里使用 base pi0 checkpoint 来初始化绝大部分权重，
+        # 对于新增的 tactile_proj_in/tactile_proj_out 这类在 checkpoint 中不存在的参数，
+        # 会通过 missing_regex=".*" 让它们保持模型随机初始化的值。
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi0_base/params",
+            missing_regex=".*",
+        ),
+        # 初始权重：使用官方 pi0 base checkpoint，然后做 LoRA 微调。
+        # 其余设置与上方 pi0_libero_low_mem_finetune 保持一致。
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    TrainConfig(
+        name="pi05_libero",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        batch_size=256,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        pytorch_weight_path="/path/to/your/pytorch_weight_path",
+        num_train_steps=30_000,
+    ),
+    #
+
+    #
+    # RoboArena configs.
+    #
+    *roboarena_config.get_roboarena_configs(),
+]
+
+if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
+    raise ValueError("Config names must be unique.")
+_CONFIGS_DICT = {config.name: config for config in _CONFIGS}
+
+
+def cli() -> TrainConfig:
+    return tyro.extras.overridable_config_cli({k: (k, v) for k, v in _CONFIGS_DICT.items()})
+
+
+def get_config(config_name: str) -> TrainConfig:
+    """Get a config by name."""
+    if config_name not in _CONFIGS_DICT:
+        closest = difflib.get_close_matches(config_name, _CONFIGS_DICT.keys(), n=1, cutoff=0.0)
+        closest_str = f" Did you mean '{closest[0]}'? " if closest else ""
+        raise ValueError(f"Config '{config_name}' not found.{closest_str}")
+
+    return _CONFIGS_DICT[config_name]
