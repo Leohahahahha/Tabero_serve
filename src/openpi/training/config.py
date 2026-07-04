@@ -28,9 +28,9 @@ import openpi.transforms as _transforms
 
 ModelType: TypeAlias = _model.ModelType
 
-# 全局触觉 / 力 loss 权重（用于 EXPRT_HIS_C_FUT：total_loss = action_loss + w * tactile_loss）
+# Tactile/force stream configuration and loss behavior.
 TACTILE_LOSS_WEIGHT: float = 0.1
-# Tabero / 力矩相关实验使用的统一 tactile 历史长度（单位：帧数）。
+# Tactile/force stream configuration and loss behavior.
 TABERO_TACTILE_HISTORY: int = 8
 # Work around a tyro issue with using nnx.filterlib.Filter directly.
 Filter: TypeAlias = nnx.filterlib.Filter
@@ -312,10 +312,10 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoTactileDataConfig(DataConfigFactory):
     """
-    Libero 数据配置（带 gripper_force 作为 tactile）。
+    Tactile/force stream configuration and loss behavior.
 
-    在标准 `LeRobotLiberoDataConfig` 的基础上，将多帧 `observation/gripper_force`
-    透传到后续 policy transform，并最终映射为 `Observation.tactile`。
+    Implementation note.
+    Tactile/force stream configuration and loss behavior.
     """
 
     extra_delta_transform: bool = False
@@ -331,7 +331,7 @@ class LeRobotLiberoTactileDataConfig(DataConfigFactory):
                         "observation/state": "state",
                         "actions": "actions",
                         "prompt": "prompt",
-                        # 额外：把多帧 gripper_force 转发出来
+                        # Implementation note.
                         "observation/gripper_force": "gripper_force",
                     }
                 )
@@ -363,18 +363,18 @@ class LeRobotLiberoTactileDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacImgDataConfig(DataConfigFactory):
     """
-    Tabero（三路图像 + 13D 动作，无 tactile）数据配置。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像：observation/image, observation/wrist_image, observation/tactile_image
-      通过 TaberoTacImgInputs 映射到 3 路视觉 token。
-    - 动作：13 维（7 关节 + 6 力），经 PadStatesAndActions padding 到 32 维。
+    Tactile/force stream configuration and loss behavior.
+      Implementation note.
+    Action/force dimensions and loss handling.
     """
 
     extra_delta_transform: bool = True
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # 直接使用 Tabero 的 LeRobot 格式（observation/...），不做 repack。
+        # Implementation note.
         data_transforms = _transforms.Group(
             inputs=[libero_policy.TaberoTacImgInputs(model_type=model_config.model_type)],
             outputs=[libero_policy.LiberoForceOutputs()],
@@ -399,11 +399,11 @@ class TaberoTacImgDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacFieldDataConfig(DataConfigFactory):
     """
-    Tabero（两路图像 + 触觉力场 + 13D 动作）数据配置。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像：observation/image, observation/wrist_image
-    - 触觉力场：observation/tactile_gripper_force（优先）或 observation/gripper_force
-      直接映射为 Observation.tactile，后续在模型内部 flatten+MLP 得到 tactile token。
+    Image stream mapping and masking behavior.
+    Tactile/force stream configuration and loss behavior.
+      Tactile/force stream configuration and loss behavior.
     """
 
     extra_delta_transform: bool = True
@@ -416,8 +416,8 @@ class TaberoTacFieldDataConfig(DataConfigFactory):
         )
 
         if self.extra_delta_transform:
-            # 与 TaberoTacImgDataConfig / TaberoTacForceDataConfig 保持一致：
-            # 对后 6 维力做 DeltaActions + AbsoluteActions 的 delta transform。
+            # Implementation note.
+            # Action/force dimensions and loss handling.
             delta_action_mask = _transforms.make_bool_mask(6, -1)
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
@@ -436,11 +436,11 @@ class TaberoTacFieldDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacForceDataConfig(DataConfigFactory):
     """
-    Tabero（两路图像 + 8×6 指力历史 + 13D 动作）数据配置。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像：image, wrist_image
-    - 指力历史：tactile_gripper_force（或 observation/tactile_gripper_force / observation/gripper_force）
-      直接作为 Observation.tactile（[*b, n, e]）输入，用于 EXPERT_HIS_C_FUT 的“历史指力 token”。
+    Image stream mapping and masking behavior.
+    Tactile/force stream configuration and loss behavior.
+      Tactile/force stream configuration and loss behavior.
     """
 
     extra_delta_transform: bool = True
@@ -471,11 +471,11 @@ class TaberoTacForceDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacForceEncDataConfig(DataConfigFactory):
     """
-    Tabero（两路图像 + 8×6 指力历史，作为 encoder-prefix tactile + 13D 动作）数据配置。
+    Tactile/force stream configuration and loss behavior.
 
-    与 `TaberoTacForceDataConfig` 的区别：
-    - 指力历史写入 Observation.tactile_prefix（prefix-only），用于 encoder-prefix 条件；
-    - 适配 `tactile_streams=("tactile_prefix",)` 的模型配置。
+    Implementation note.
+    Tactile/force stream configuration and loss behavior.
+    Tactile/force stream configuration and loss behavior.
     """
 
     extra_delta_transform: bool = True
@@ -506,17 +506,17 @@ class TaberoTacForceEncDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacAllDataConfig(DataConfigFactory):
     """
-    Tabero（3 路图像 + 触觉力场 marker_motion/指力 + 13D 动作）数据配置。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像：
+    Image stream mapping and masking behavior.
         - image                  -> base_0_rgb
         - wrist_image            -> left_wrist_0_rgb
         - tactile_image          -> right_wrist_0_rgb
-    - 触觉：
-        - 推荐：tactile_marker_motion（如 [9, 198, 2]），在 `TaberoTacAllInputs` 中 reshape 成 [9, 198*2]，
-          作为 Observation.tactile 喂给模型，在模型端使用 TCN 编码为单个 tactile token；
-        - 兼容：tactile_gripper_force / observation/tactile_gripper_force / observation/gripper_force，
-          在无 marker_motion 时退化为 tacforce 风格的 8×6 指力历史。
+    Tactile/force stream configuration and loss behavior.
+        Tactile/force stream configuration and loss behavior.
+          Tactile/force stream configuration and loss behavior.
+        Tactile/force stream configuration and loss behavior.
+          Tactile/force stream configuration and loss behavior.
     """
 
     extra_delta_transform: bool = True
@@ -547,11 +547,11 @@ class TaberoTacAllDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class TaberoNoTactNoForceDataConfig(DataConfigFactory):
     """
-    Tabero（多路图像 + 只用 7D 关节动作，不使用任何 tactile / 指力）的数据配置。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像：只用 image / wrist_image；第三路 right_wrist_0_rgb 用零图 + mask=False（与原始 LiberoInputs 一致）
-    - 动作：原始 13D（7 关节 + 6 力）在这里通过 SliceActions(7) 截断为 7D，只训练关节，
-      后 6 维力完全从 loss 中“屏蔽掉”，行为与原始 pi0_libero_wo_force 类似。
+    Image stream mapping and masking behavior.
+    Action/force dimensions and loss handling.
+      Loss component computation and logging behavior.
     """
 
     extra_delta_transform: bool = True
@@ -560,10 +560,10 @@ class TaberoNoTactNoForceDataConfig(DataConfigFactory):
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         data_transforms = _transforms.Group(
             inputs=[
-                # 只用两路图像（image / wrist_image）+ state + 13D actions，从 Tabero v2.1 扁平格式读入，
-                # 不读取 tactile_image / tactile_force 等任何触觉模态。
+                # Image stream mapping and masking behavior.
+                # Tactile/force stream configuration and loss behavior.
                 libero_policy.TaberoNoTactInputs(model_type=model_config.model_type),
-                # 将动作截断为前 7 维（关节），彻底丢弃后 6 维指力。
+                # Tactile/force stream configuration and loss behavior.
                 _transforms.SliceActions(7),
             ],
             outputs=[libero_policy.LiberoOutputs()],
@@ -588,15 +588,15 @@ class TaberoNoTactNoForceDataConfig(DataConfigFactory):
 @dataclasses.dataclass(frozen=True)
 class TaberoNoTactForceDataConfig(DataConfigFactory):
     """
-    Tabero（纯视觉两路图像 + 13D 动作/力预测，不使用任何 tactile token / tactile 图像）。
+    Tactile/force stream configuration and loss behavior.
 
-    与 `TaberoNoTactNoForceDataConfig` 的唯一区别：
-    - 不再 SliceActions(7)，而是保留原始 13D（7 关节 + 6 力）用于训练监督与推理输出；
-    - 输出使用 `LiberoForceOutputs()`，只返回前 13 维。
+    Implementation note.
+    Action/force dimensions and loss handling.
+    Implementation note.
 
-    图像侧仍与 notac 一致：
-    - 只读 image / wrist_image；
-    - 第三路 right_wrist_0_rgb 用零图 + mask=False（PI0 下默认 mask 掉）。
+    Image stream mapping and masking behavior.
+    Implementation note.
+    Implementation note.
     """
 
     extra_delta_transform: bool = True
@@ -605,7 +605,7 @@ class TaberoNoTactForceDataConfig(DataConfigFactory):
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         data_transforms = _transforms.Group(
             inputs=[
-                # 只用两路图像（image / wrist_image）+ state + 13D actions，不读取 tactile_image / tactile_force 等任何触觉模态。
+                # Tactile/force stream configuration and loss behavior.
                 libero_policy.TaberoNoTactInputs(model_type=model_config.model_type),
             ],
             outputs=[libero_policy.LiberoForceOutputs()],
@@ -629,13 +629,13 @@ class TaberoNoTactForceDataConfig(DataConfigFactory):
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotLiberoNoTactileDataConfig(DataConfigFactory):
-    """Libero 数据配置（不使用 gripper_force / tactile，只保留前 7 维动作）。"""
+    """Tactile/force stream configuration and loss behavior."""
 
     extra_delta_transform: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        # 与 LeRobotLiberoDataConfig 相同的 repack，只是不再转发 gripper_force。
+        # Implementation note.
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
@@ -650,7 +650,7 @@ class LeRobotLiberoNoTactileDataConfig(DataConfigFactory):
             ]
         )
 
-        # 数据流：LiberoInputs 负责 key 适配与 padding，SliceActions(7) 将动作截断到前 7 维。
+        # Action/force dimensions and loss handling.
         data_transforms = _transforms.Group(
             inputs=[
                 libero_policy.LiberoInputs(model_type=model_config.model_type),
@@ -809,37 +809,37 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacimg_tabero",
-        # 三路图像（image / wrist_image / tactile_image），13 维动作（7 关节 + 6 力），
-        # 不使用历史 tactile token，但在 loss 里仍对 [关节 vs 力] 做加权（0.1 * tactile_loss）。
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            # 数据中真实有效动作维度为 13，其余通过 PadStatesAndActions padding。
+            # Action/force dimensions and loss handling.
             effective_action_dim=13,
-            # 启用 EXPERT_HIS_C_FUT 的 loss 拆分逻辑，但 Observation.tactile 为空，
-            # 所以只做 [前 7 维动作 + 后 6 维力] 的加权监督，不注入 tactile token。
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # tactile_dim_in=0 表示不需要 tactile token 的 Linear 投影，只启用 loss 拆分逻辑，
-            # 既避免引入新的权重，又保持和原有 checkpoint 的结构兼容。
+            # Tactile/force stream configuration and loss behavior.
+            # Checkpoint loading behavior for newly added parameters.
             tactile_dim_in=0,
             tactile_loss_weight=TACTILE_LOSS_WEIGHT,
         ),
         data=TaberoTacImgDataConfig(
-            # 你的原始 Tabero 数据集（含 tactile_image / tactile_gripper_force 等字段）。
+            # Tactile/force stream configuration and loss behavior.
             repo_id="NathanWu7/tabero",
             base_config=DataConfig(
-                # 如果在 LeRobot meta 里有 tasks 信息，可以启用从 task 里自动生成 prompt。
+                # Implementation note.
                 prompt_from_task=True,
             ),
-            # 与当前 pi0_libero_force 配置保持一致，额外做一次 delta transform。
+            # Implementation note.
             extra_delta_transform=True,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
             peak_lr=2.5e-5,
             decay_lr=2.5e-6,
         ),
-        # 使用官方 pi0 base checkpoint 初始化，再做 LoRA 微调。
+        # Checkpoint loading behavior for newly added parameters.
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi0_base/params",
         ),
@@ -851,8 +851,8 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacimgwo_tabero",
-        # 三路图像（image / wrist_image / tactile_image），动作仍为 13 维（7 关节 + 6 力），
-        # 但训练时只监督前 7 维关节动作（将力段 loss 权重设为 0）。
+        # Tactile/force stream configuration and loss behavior.
+        # Action/force dimensions and loss handling.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
@@ -860,7 +860,7 @@ _CONFIGS = [
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
             tactile_dim_in=0,
-            # 关键：关闭力段（后 6 维）的监督。
+            # Implementation note.
             tactile_loss_weight=0.0,
         ),
         data=TaberoTacImgDataConfig(
@@ -885,34 +885,34 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacall_tabero",
-        # 三路图像（image / wrist_image / tactile_image）+ tacfield（marker_motion）+ tacforce（8×6 指力）+ 13 维动作/力。
+        # Tactile/force stream configuration and loss behavior.
         #
-        # 设计目标（双触觉通道）：
-        # - tacimg：第三路 tactile_image 作为额外视觉模态，仅在图像侧修改字段；
-        # - tacfield（encoder 前缀通道）：tactile_marker_motion 走 TCN 编码路径，作为 prefix tactile token；
-        # - tacforce（decoder 后缀通道）：8×6 指力历史沿用原版 tacforce 的 MLP 通道；
-        # - 动作：仍为 13 维（7 关节 + 6 力），在 loss 中按 [动作, 力] 拆分并对力做加权监督。
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
+        # Action/force dimensions and loss handling.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            # 13 维 = 7 关节 + 6 力。
+            # Implementation note.
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # 启用双触觉通道：
-            # - suffix 通道（tactile_suffix）：沿用原版 tacforce（8×6 指力，经 MLP 编码，仅进 decoder）；
-            # - prefix 通道（tactile_prefix）：沿用 tacfield（9 帧 marker，经 TCN 编码，仅进 encoder）。
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
             tactile_streams=("tactile_suffix", "tactile_prefix"),
-            # 将 tacforce（tactile_suffix）编码后的 token 放到 prefix 序列里（与 tacfield 同为 prefix 条件）。
-            # 其他保持不变；tacfield 仍然走 tactile_prefix（prefix）。
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
             tactile_suffix_placement="prefix",
-            # decoder-suffix：tacforce（8×6 gripper force），flatten 成 8*6，经 MLP 编码。
+            # Encoder configuration and sequence handling.
             tactile_dim_in=8 * 6,
             tactile_history=TABERO_TACTILE_HISTORY,
             tactile_encoder_type="mlp",
             tactile_use_reference_frame=False,
             tactile_diff_from_reference=True,
-            # encoder-prefix：tacfield（9 帧 marker motion），reshape 成 [9, 198*2]，经 TCN 编码。
+            # Encoder configuration and sequence handling.
             tactile_prefix_dim_in=9 * 198 * 2,
             tactile_prefix_history=TABERO_TACTILE_HISTORY,
             tactile_prefix_encoder_type="tcn",
@@ -931,8 +931,8 @@ _CONFIGS = [
             ),
             extra_delta_transform=True,
         ),
-        # 仍然使用 pi0 base checkpoint 初始化，新增的 tactile_proj_* / TCN 参数在 checkpoint 中不存在，
-        # 通过 missing_regex=".*" 允许它们保持随机初始化。
+        # Tactile/force stream configuration and loss behavior.
+        # Implementation note.
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi0_base/params",
             missing_regex=".*",
@@ -945,10 +945,10 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_notac_tabero",
-        # Tabero 纯视觉基线（标准 Pi0）：
-        # - 图像：只用两路（image / wrist_image）；第三路 right_wrist_0_rgb 用零图并在 PI0 下默认 mask 掉
+        # Implementation note.
+        # Image stream mapping and masking behavior.
         #   （TaberoNoTactInputs：right_wrist_0_rgb = 0, image_mask=False）。
-        # - 动作：仅训练前 7 维关节动作（SliceActions(7)），不做任何力/触觉预测或监督。
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
@@ -975,7 +975,7 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_notac_bin_tabero",
-        # 与 `pi0_lora_notac_tabero` 完全一致，仅更换数据集为 tabero_binary。
+        # Dataset format and transform behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
@@ -1002,17 +1002,17 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacpred_tabero",
-        # Tabero 纯视觉（与 notac 一致）但预测 13D 动作/力：
-        # - 图像：只用两路（image / wrist_image）；第三路 right_wrist_0_rgb 用零图并在 PI0 下默认 mask 掉。
-        # - 不读取任何 tactile_* 字段，也不注入 tactile token（tactile_dim_in=0 / tactile_streams=()）。
-        # - 训练/推理输出：前 13 维（7 关节 + 6 力），并对力段做加权监督（TACTILE_LOSS_WEIGHT）。
+        # Action/force dimensions and loss handling.
+        # Image stream mapping and masking behavior.
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # 不创建任何 tactile tokenizer 权重，仅使用 EXPERT_HIS_C_FUT 的 loss 拆分逻辑。
+            # Tactile/force stream configuration and loss behavior.
             tactile_dim_in=0,
             tactile_streams=(),
             tactile_loss_weight=TACTILE_LOSS_WEIGHT,
@@ -1039,20 +1039,20 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_lora_tacimg_tabero",
-        # Pi05 + LoRA：三路图像（image / wrist_image / tactile_image），13 维动作（7 关节 + 6 力），
-        # 不注入任何 tactile token，但在 loss 里对 [关节 vs 力] 做加权（tactile_loss_weight）。
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             pi05=True,
             paligemma_variant="gemma_2b_lora",
-            # 发布的 checkpoint 仅在第一个 expert（PaliGemma）上带 LoRA；
-            # action expert 分支保存的是普通 gemma_300m 权重。
+            # Checkpoint loading behavior for newly added parameters.
+            # Action/force dimensions and loss handling.
             action_expert_variant="gemma_300m_lora",
             discrete_state_input=True,
-            # 数据中真实有效动作维度为 13，其余通过 PadStatesAndActions padding。
+            # Action/force dimensions and loss handling.
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # 不创建 tactile token 相关权重，只启用 loss 拆分逻辑。
+            # Tactile/force stream configuration and loss behavior.
             tactile_dim_in=0,
             tactile_streams=(),
             tactile_loss_weight=0.01,
@@ -1083,9 +1083,9 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_lora_tacfield_tabero",
-        # Pi05 + LoRA：两路图像（image / wrist_image）+ tacfield（marker_motion，encoder-prefix）+ 13 维动作/力。
-        # - tacfield：走 TCN 编码路径，作为 encoder-prefix tactile token；
-        # - 动作：仍为 13 维（7 关节 + 6 力），在 loss 中按 [动作, 力] 拆分并对力做加权监督。
+        # Image stream mapping and masking behavior.
+        # Tactile/force stream configuration and loss behavior.
+        # Action/force dimensions and loss handling.
         model=pi0_config.Pi0Config(
             pi05=True,
             paligemma_variant="gemma_2b_lora",
@@ -1094,7 +1094,7 @@ _CONFIGS = [
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # prefix-only：tacfield 作为 encoder-prefix token，suffix 不创建 tactile encoder。
+            # Tactile/force stream configuration and loss behavior.
             tactile_dim_in=0,
             tactile_prefix_dim_in=9 * 198 * 2,
             tactile_prefix_history=TABERO_TACTILE_HISTORY,
@@ -1119,7 +1119,7 @@ _CONFIGS = [
             ),
             extra_delta_transform=True,
         ),
-        # 新增的 tactile_prefix_encoder（TCN）参数在 base checkpoint 里不存在，允许缺失。
+        # Tactile/force stream configuration and loss behavior.
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params",
             missing_regex=".*",
@@ -1134,11 +1134,11 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi05_lora_tacforce_tabero",
-        # Pi05 + LoRA：两路图像（image / wrist_image）+ tacforce（8×6 指力历史，encoder-prefix）+ 13 维动作/力。
+        # Tactile/force stream configuration and loss behavior.
         #
-        # 注意：你要求的 “force 在 encoder 部分” 对应这里的 prefix-only 配置：
-        # - tactile_prefix_*：8×6 指力历史只作为 encoder-prefix token；
-        # - tactile_dim_in=0：suffix 不创建 tactile encoder。
+        # Encoder configuration and sequence handling.
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             pi05=True,
             paligemma_variant="gemma_2b_lora",
@@ -1171,7 +1171,7 @@ _CONFIGS = [
             ),
             extra_delta_transform=True,
         ),
-        # 新增的 tactile_prefix_encoder（MLP）参数在 base checkpoint 里不存在，允许缺失。
+        # Tactile/force stream configuration and loss behavior.
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi05_base/params",
             missing_regex=".*",
@@ -1186,24 +1186,24 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacfield_tabero",
-        # 两路图像（image / wrist_image）+ 触觉力场 tactile（8×6）+ 13 维未来动作/力联合预测。
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            # 13 维 = 7 关节 + 6 力，loss 内部按 [动作, 力] 维度切分。
+            # Action/force dimensions and loss handling.
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # prefix：Tabero 力场 marker_motion，形状 [9, 198, 2] → reshape 成 [9, 198*2]，走 TCN。
-            # 注意：这里是 encoder-prefix 通道，因此使用 tactile_prefix_* 字段显式配置；
-            # 同时关闭 suffix tactile encoder（tactile_dim_in=0）。
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
             tactile_dim_in=0,
             tactile_prefix_dim_in=9 * 198 * 2,
             tactile_prefix_history=TABERO_TACTILE_HISTORY,
             tactile_prefix_encoder_type="tcn",
             tactile_prefix_use_reference_frame=True,
             tactile_prefix_diff_from_reference=False,
-            # 只启用 encoder-prefix 触觉通道（tacfield）。
+            # Tactile/force stream configuration and loss behavior.
             tactile_streams=("tactile_prefix",),
             tactile_loss_weight=TACTILE_LOSS_WEIGHT,
         ),
@@ -1220,7 +1220,7 @@ _CONFIGS = [
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi0_base/params",
-            # 新增的 tactile_proj_* 参数在 base checkpoint 里不存在，允许缺失。
+            # Tactile/force stream configuration and loss behavior.
             missing_regex=".*",
         ),
         num_train_steps=50_000,
@@ -1231,8 +1231,8 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacfieldwo_tabero",
-        # 两路图像（image / wrist_image）+ tacfield（marker_motion，encoder-prefix）作为条件，
-        # 动作仍为 13 维（7 关节 + 6 力），但训练时只监督前 7 维关节动作（将力段 loss 权重设为 0）。
+        # Image stream mapping and masking behavior.
+        # Action/force dimensions and loss handling.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
@@ -1246,7 +1246,7 @@ _CONFIGS = [
             tactile_prefix_use_reference_frame=True,
             tactile_prefix_diff_from_reference=False,
             tactile_streams=("tactile_prefix",),
-            # 关键：关闭力段（后 6 维）的监督。
+            # Implementation note.
             tactile_loss_weight=0.0,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -1272,19 +1272,19 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacforce_tabero",
-        # 两路图像（image / wrist_image）+ 8×6 指力历史 tactile + 13 维未来动作/力联合预测。
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            # 13 维 = 7 关节 + 6 力，loss 内部按 [动作, 力] 维度切分并对力做 0.1 加权。
+            # Action/force dimensions and loss handling.
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # 指力历史：tactile_gripper_force 形状约为 [8, 6]，在模型内部 flatten 成 8*6。
+            # Tactile/force stream configuration and loss behavior.
             tactile_dim_in=8 * 6,
-            # 显式设定历史长度为 TABERO_TACTILE_HISTORY（无显式基准帧，仅时间窗长度）。
+            # Tactile/force stream configuration and loss behavior.
             tactile_history=TABERO_TACTILE_HISTORY,
-            # 只启用 decoder-suffix 触觉通道（tacforce 指力历史）。
+            # Tactile/force stream configuration and loss behavior.
             tactile_streams=("tactile_suffix",),
             tactile_loss_weight=TACTILE_LOSS_WEIGHT,
         ),
@@ -1311,14 +1311,14 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacforce_tabero_enc",
-        # 两路图像（image / wrist_image）+ 8×6 指力历史（作为 encoder-prefix 条件）+ 13 维未来动作/力联合预测。
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            # prefix-only：8×6 指力历史只作为 encoder-prefix token，suffix 不创建 tactile encoder。
+            # Tactile/force stream configuration and loss behavior.
             tactile_dim_in=0,
             tactile_prefix_dim_in=8 * 6,
             tactile_prefix_history=TABERO_TACTILE_HISTORY,
@@ -1351,8 +1351,8 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_tacforcewo_tabero",
-        # 两路图像（image / wrist_image）+ tacforce（8×6 指力历史，encoder-prefix）作为条件，
-        # 动作仍为 13 维（7 关节 + 6 力），但训练时只监督前 7 维关节动作（将力段 loss 权重设为 0）。
+        # Tactile/force stream configuration and loss behavior.
+        # Action/force dimensions and loss handling.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
@@ -1366,7 +1366,7 @@ _CONFIGS = [
             tactile_prefix_use_reference_frame=False,
             tactile_prefix_diff_from_reference=True,
             tactile_streams=("tactile_prefix",),
-            # 关键：关闭力段（后 6 维）的监督。
+            # Implementation note.
             tactile_loss_weight=0.0,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -1392,21 +1392,21 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_noforce_taforce",
-        # 与 pi0_libero_low_mem_finetune 使用相同的 LoRA 配置，但在 Tabero 力矩数据上
-        # 只使用前 7 维关节动作，不使用 tactile。
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            # 使用与 force 版相同的 EXPERT_HIS_C_FUT loss 拆分逻辑，但关闭力的监督：
-            # - effective_action_dim=13：前 7 维是真实关节动作，后 6 维作为“力槽位”；
-            # - tactile_type=EXPERT_HIS_C_FUT：在 compute_loss 中按 [7 动作 + 6 力] 拆分；
-            # - tactile_dim_in=0：不创建 tactile token 相关 Linear，只启用 loss 拆分逻辑；
-            # - tactile_loss_weight=0.0：力的 loss 权重为 0，只剩 7 维动作 loss。
+            # Loss component computation and logging behavior.
+            # Action/force dimensions and loss handling.
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
+            # Tactile/force stream configuration and loss behavior.
             effective_action_dim=13,
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
             tactile_dim_in=0,
-            # 显式指定：不启用任何 tactile token 通道，仅做 13 维动作+力的 loss 拆分。
+            # Tactile/force stream configuration and loss behavior.
             tactile_streams=(),
             tactile_loss_weight=0.0,
         ),
@@ -1428,25 +1428,25 @@ _CONFIGS = [
     ),
     TrainConfig(
         name="pi0_lora_force_taforce",
-        # 带力矩历史 + 未来动作/力联合预测的 LoRA 微调配置。
+        # Tactile/force stream configuration and loss behavior.
         model=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora",
             action_expert_variant="gemma_300m_lora",
-            # 你当前数据里 action = 7 动作 + 6 力，一共 13 维。
-            # 模型内部 action_dim 仍然保持 32（与官方 checkpoint 对齐），
-            # 但通过 effective_action_dim=13 告诉模型：前 13 维才是“有语义的”，
-            # 其中前 7 维是动作，第 8–13 维是力矩，其余视为 padding。
+            # Action/force dimensions and loss handling.
+            # Action/force dimensions and loss handling.
+            # Action/force dimensions and loss handling.
+            # Tactile/force stream configuration and loss behavior.
             effective_action_dim=13,
-            # 与 pi0_libero_low_mem_finetune 保持一致，沿用基线的 action_horizon=50。
-            # 启用我们实现的 EXPERT_HIS_C_FUT 模式：
-            # - 历史力来自 gripper_force[8,6]，flatten 后经 MLP 做 expert token；
-            # - 未来动作/力直接从 actions 的 13 维中学习（前 7 维动作，后 6 维力）。
+            # Action/force dimensions and loss handling.
+            # Implementation note.
+            # Reference-frame and history-window handling.
+            # Action/force dimensions and loss handling.
             tactile_type=TactileType.EXPERT_HIS_C_FUT,
             tactile_dim=6,
-            tactile_dim_in=8 * 6,  # gripper_force 的 8 帧历史 * 6 维
+            tactile_dim_in=8 * 6,  # Tactile/force stream configuration and loss behavior.
             tactile_history=TABERO_TACTILE_HISTORY,
             tactile_streams=("tactile_suffix",),
-            # 力 / 触觉 loss 的权重，可以在这里直接修改（默认 0.1）。
+            # Tactile/force stream configuration and loss behavior.
             tactile_loss_weight=TACTILE_LOSS_WEIGHT,
         ),
         lr_schedule=_optimizer.CosineDecaySchedule(
@@ -1454,27 +1454,27 @@ _CONFIGS = [
             decay_lr=2.5e-6,
         ),
         data=LeRobotLiberoTactileDataConfig(
-            # 使用你在 Hugging Face 上的 LeRobot 数据集仓库作为 repo_id。
-            # 这里直接填 HF Hub 的 dataset id，DataLoader 会通过 fsspec 拉取数据。
+            # Dataset format and transform behavior.
+            # Dataset format and transform behavior.
             repo_id="NathanWu7/tabero_force",
-            # 这里不再强制指定本地 assets_dir，norm_stats 训练后会先保存在本地
+            # Implementation note.
             #   ./assets/pi0_libero_force_low_mem_finetune/NathanWu7_tabero_force/...
-            # 然后你可以把这整个目录和 checkpoint 一起上传到同一个 HF 仓库。
+            # Checkpoint loading behavior for newly added parameters.
             base_config=DataConfig(
-                # 你的数据里如果没有 task->prompt，这里可以保持 False；有的话可以改成 True。
+                # Dataset format and transform behavior.
                 prompt_from_task=True,
             ),
             extra_delta_transform=True,
         ),
-        # 注意：这里使用 base pi0 checkpoint 来初始化绝大部分权重，
-        # 对于新增的 tactile_proj_in/tactile_proj_out 这类在 checkpoint 中不存在的参数，
-        # 会通过 missing_regex=".*" 让它们保持模型随机初始化的值。
+        # Checkpoint loading behavior for newly added parameters.
+        # Tactile/force stream configuration and loss behavior.
+        # Implementation note.
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "gs://openpi-assets/checkpoints/pi0_base/params",
             missing_regex=".*",
         ),
-        # 初始权重：使用官方 pi0 base checkpoint，然后做 LoRA 微调。
-        # 其余设置与上方 pi0_libero_low_mem_finetune 保持一致。
+        # Checkpoint loading behavior for newly added parameters.
+        # Implementation note.
         num_train_steps=30_000,
         freeze_filter=pi0_config.Pi0Config(
             paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"

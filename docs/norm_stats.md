@@ -1,46 +1,46 @@
-# 归一化统计量
+# Normalization Statistics
 
-我们的模型在策略训练和推理过程中会对本体感知状态输入和动作目标进行归一化。归一化所用的统计量在训练数据上计算，并与模型检查点一起存储。
+During policy training and inference, our models normalize proprioceptive state inputs and action targets. The statistics used for normalization are computed on the training data and stored together with model checkpoints.
 
-## 重新加载归一化统计量
+## Reloading Normalization Statistics
 
-当你在新数据集上微调我们的模型时，需要决定是 (A) 复用现有的归一化统计量，还是 (B) 在新训练数据上计算新的统计量。哪种选择更适合你取决于你的机器人和任务与预训练数据集中机器人和任务分布的相似程度。
+When fine-tuning our models on a new dataset, you need to decide whether to (A) reuse existing normalization statistics or (B) compute new statistics on the new training data. The better choice depends on how similar your robot and task are to the robot and task distribution in the pre-training data.
 
-**如果你的目标机器人与预训练统计量匹配，建议重新加载相同的归一化统计量。** 通过重新加载归一化统计量，数据集中的动作将对模型更加"熟悉"，从而可能带来更好的性能。
+**If your target robot matches the pre-trained statistics, we recommend reloading the same normalization statistics.** By reloading normalization statistics, the actions in the dataset will be more "familiar" to the model, which may improve performance.
 
-**注意：** 重新加载归一化统计量是否有益取决于你的机器人和任务与预训练分布中机器人和任务分布的相似程度。我们建议始终尝试两种方式——重新加载和在新的数据集上计算新的统计量（参见 [README](../README.md) 了解如何计算新统计量），并选择对你的任务效果更好的方式。
+**Note:** Whether reloading normalization statistics is beneficial depends on how similar your robot and task are to the robot and task distribution in the pre-training data. We recommend always trying both options, reloading existing statistics and computing new statistics on the new dataset (see [README](../README.md) for how to compute new statistics), then choosing the one that works better for your task.
 
-## 提供的预训练归一化统计量
+## Provided Pre-Trained Normalization Statistics
 
-以下是我们提供的所有预训练归一化统计量列表。我们为 `pi0_base` 和 `pi0_fast_base` 模型都提供了这些统计量。对于 `pi0_base`，将 `assets_dir` 设置为 `gs://openpi-assets/checkpoints/pi0_base/assets`；对于 `pi0_fast_base`，将 `assets_dir` 设置为 `gs://openpi-assets/checkpoints/pi0_fast_base/assets`。
+Below is a list of all pre-trained normalization statistics we provide. These statistics are available for both the `pi0_base` and `pi0_fast_base` models. For `pi0_base`, set `assets_dir` to `gs://openpi-assets/checkpoints/pi0_base/assets`; for `pi0_fast_base`, set `assets_dir` to `gs://openpi-assets/checkpoints/pi0_fast_base/assets`.
 
-| 机器人 | 描述 | Asset ID |
-| ------ | ---- | -------- |
-| ALOHA | 6-DoF 双臂机器人，带平行夹爪 | trossen |
-| Mobile ALOHA | ALOHA 移动版，安装在 Slate 底座上 | trossen_mobile |
-| ARX | 双臂 ARX-5 机器人，带平行夹爪 | arx |
-| ARX mobile | 双臂 ARX-5 移动版，安装在 Slate 底座上 | arx_mobile |
-| Fibocom mobile | Fibocom 移动机器人，含 2x ARX-5 手臂 | fibocom_mobile |
+| Robot | Description | Asset ID |
+| ----- | ----------- | -------- |
+| ALOHA | 6-DoF dual-arm robot with parallel grippers | trossen |
+| Mobile ALOHA | Mobile version of ALOHA mounted on a Slate base | trossen_mobile |
+| ARX | Dual-arm ARX-5 robot with parallel grippers | arx |
+| ARX mobile | Mobile version of dual-arm ARX-5 mounted on a Slate base | arx_mobile |
+| Fibocom mobile | Fibocom mobile robot with two ARX-5 arms | fibocom_mobile |
 
-## Pi0 模型动作空间定义
+## Pi0 Model Action Space Definition
 
-`pi0_base` 和 `pi0_fast_base` 使用以下动作空间定义（左右是从机器人后方朝向工作空间的方向定义的）：
+`pi0_base` and `pi0_fast_base` use the following action space definition. Left and right are defined from the rear of the robot facing the workspace:
 
 ```
-    "dim_0:dim_5": "左臂关节角度",
-    "dim_6": "左臂夹爪位置",
-    "dim_7:dim_12": "右臂关节角度（仅双臂）",
-    "dim_13": "右臂夹爪位置（仅双臂）",
+    "dim_0:dim_5": "left arm joint angles",
+    "dim_6": "left gripper position",
+    "dim_7:dim_12": "right arm joint angles (dual-arm only)",
+    "dim_13": "right gripper position (dual-arm only)",
 
-    # 对于移动机器人：
-    "dim_14:dim_15": "x-y 底座速度（仅移动机器人）",
+    # For mobile robots:
+    "dim_14:dim_15": "x-y base velocity (mobile robots only)",
 ```
 
-本体感知状态使用与动作空间相同的定义，但移动机器人的底座 x-y 位置（最后两个维度）不包含在本体感知状态中。
+The proprioceptive state uses the same definition as the action space, except that the mobile robot's base x-y position (the last two dimensions) is not included in the proprioceptive state.
 
-对于 7-DoF 机器人，我们使用动作空间的前 7 个维度作为关节动作，第 8 个维度作为夹爪动作。
+For 7-DoF robots, we use the first 7 dimensions of the action space as joint actions and the 8th dimension as the gripper action.
 
-通用信息：
-- 关节角度以弧度表示，零位置对应每个机器人接口库报告的零位。
-- 夹爪位置在 [0.0, 1.0] 范围内，0.0 对应完全打开，1.0 对应完全关闭。
-- 控制频率为 20 Hz 或 50 Hz，取决于机器人平台。
+General information:
+- Joint angles are represented in radians. The zero position corresponds to the zero position reported by each robot interface library.
+- Gripper positions are in the range [0.0, 1.0], where 0.0 means fully open and 1.0 means fully closed.
+- The control frequency is 20 Hz or 50 Hz, depending on the robot platform.

@@ -100,20 +100,20 @@ def main(config_name: str, max_frames: int | None = None):
         )
 
     # NOTE:
-    # - 默认官方 OpenPI 只统计 state/actions。
-    # - 本工程额外支持 tactile_prefix/tactile_suffix（如果 batch 中存在），以便训练时通过
-    #   transforms.Normalize(norm_stats, ...) 对触觉也做同样的 z-score / quantile 归一化。
+    # - Official OpenPI only computes statistics for state/actions by default.
+    # - This project additionally supports tactile_prefix/tactile_suffix when present in the batch,
+    #   so transforms.Normalize(norm_stats, ...) can apply the same z-score / quantile normalization to tactile data during training.
     keys = ["state", "actions", "tactile_prefix", "tactile_suffix"]
     stats = {key: normalize.RunningStats() for key in keys}
 
     for batch in tqdm.tqdm(data_loader, total=num_batches, desc="Computing stats"):
-        # 兼容：不同数据配置可能不提供 tactile_* 字段，因此这里做存在性判断。
+        # Compatibility: different data configs may not provide tactile_* fields, so check existence here.
         for key in keys:
             if key not in batch:
                 continue
             stats[key].update(np.asarray(batch[key]))
 
-    # 只保存“至少更新过一次”的字段，避免保存空统计量导致误用。
+    # Save only fields that have been updated at least once to avoid writing empty statistics that could be misused.
     norm_stats = {
         key: rs.get_statistics()
         for key, rs in stats.items()

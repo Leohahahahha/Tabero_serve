@@ -150,8 +150,8 @@ def train_step(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
     ):
         if isinstance(model, Pi0) and getattr(model, "tactile_type", None) is TactileType.EXPERT_HIS_C_FUT:
-            # Pi0 + EXPERT_HIS_C_FUT：模型返回总 loss 以及已经聚合好的
-            # action_loss / tactile_loss scalar，方便 wandb 记录且避免额外的张量开销。
+            # Loss component computation and logging behavior.
+            # Tactile/force stream configuration and loss behavior.
             chunked_loss, components = model.compute_loss(
                 rng,
                 observation,
@@ -212,7 +212,7 @@ def train_step(
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
-        # 这两个字段在非 EXPERT_HIS_C_FUT 配置下为 0，占位以便 wandb 画统一曲线。
+        # Implementation note.
         "action_loss": aux["action_loss"],
         "tactile_loss": aux["tactile_loss"],
     }

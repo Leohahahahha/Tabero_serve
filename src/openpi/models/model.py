@@ -95,12 +95,12 @@ class Observation(Generic[ArrayT]):
     image_masks: dict[str, at.Bool[ArrayT, "*b"]]
     # Low-dimensional robot state.
     state: at.Float[ArrayT, "*b s"]
-    # Decoder-suffix 触觉 / 力矩历史（例如 8×6 指力），形状约定：[*b, n, e]。
-    # 当未使用触觉时为 None。
-    # 注意：suffix/prefix 的时间长度与特征维度可能不同，因此不能复用同一组轴名（否则 jaxtyping 会强制它们一致）。
+    # Decoder-suffix tactile / torque history, such as 8x6 gripper force; shape convention: [*b, n, e].
+    # None when tactile data is not used.
+    # Note: suffix/prefix may have different temporal lengths and feature dimensions, so they cannot reuse the same axis names; otherwise jaxtyping would force them to match.
     tactile_suffix: at.Float[ArrayT, "*b n_suffix e_suffix"] | None = None
-    # Encoder-prefix 触觉历史（例如 Tabero 9 帧 marker motion，经 reshape 后的 [*b, n, e]）。
-    # 仅在 dual_tactile=True 且相应数据流提供时使用。
+    # Encoder-prefix tactile history, such as Tabero 9-frame marker motion after reshape: [*b, n, e].
+    # Used only when the corresponding tactile stream is provided.
     tactile_prefix: at.Float[ArrayT, "*b n_prefix e_prefix"] | None = None
 
     # Tokenized prompt.
@@ -215,7 +215,7 @@ def preprocess_observation(
     tactile_prefix = observation.tactile_prefix
 
     if tactile_type is TactileType.NO:
-        # 模型完全忽略所有触觉通道。
+        # The model ignores all tactile streams.
         tactile_suffix = None
         tactile_prefix = None
 

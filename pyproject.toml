@@ -1,7 +1,7 @@
 [project]
 name = "tabero-vtla"
 version = "0.1.0"
-description = "Tabero-VTLA: 视觉-触觉-语言-动作模型训练与推理仓库"
+description = "Tabero-VTLA: vision-tactile-language-action model training and inference repository"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { file = "LICENSE" }

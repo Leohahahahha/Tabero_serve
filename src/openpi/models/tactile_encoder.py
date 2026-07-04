@@ -12,11 +12,11 @@ logger = logging.getLogger("openpi")
 
 
 class MLPTactileEncoder(nnx.Module):
-    """简单的 flatten+MLP 触觉编码器（向后兼容原有实现）。
+    """Tactile/force stream configuration and loss behavior.
 
-    输入约定：
-        tactile: [b, *d]，在 batch 维之后的所有维度会整体 flatten 成一维，
-        其总长度必须等于 `in_dim`。
+    Implementation note.
+        Tactile/force stream configuration and loss behavior.
+        Implementation note.
     """
 
     def __init__(
@@ -47,9 +47,9 @@ class MLPTactileEncoder(nnx.Module):
 
 
 class TactileTCNBlock(nnx.Module):
-    """简单的 1D TCN block：显式实现因果卷积 + 残差（仅依赖 nnx.Linear）。
+    """Implementation note.
 
-    输入形状：[b, n, in_dim]，输出形状：[b, n, out_dim]。
+    Implementation note.
     """
 
     def __init__(
@@ -77,14 +77,14 @@ class TactileTCNBlock(nnx.Module):
         b, n, d = x.shape
         k = self.kernel_size
 
-        # 因果 padding：在时间维前面补 (k-1) 个 0。
+        # Padding dimensions and their loss weighting.
         pad = jnp.zeros((b, k - 1, d), dtype=x.dtype)
         x_pad = jnp.concatenate([pad, x], axis=1)  # [b, n + k - 1, d]
 
-        # 聚合 K 个时间偏移的线性变换（完全向量化，便于 XLA 并行优化）。
+        # Implementation note.
         y = 0.0
         for idx, linear in self.kernels.items():
-            # idx: "kernel_0" 表示当前时刻，"kernel_1" 表示前 1 步，依此类推。
+            # Implementation note.
             offset = int(idx.split("_")[1])
             start = (k - 1 - offset)
             end = start + n
@@ -96,15 +96,15 @@ class TactileTCNBlock(nnx.Module):
 
 
 class TactileTCNEncoder(nnx.Module):
-    """多层 TCN encoder，用于将多帧 tactile 序列编码为单个 token embedding。
+    """Tactile/force stream configuration and loss behavior.
 
-    约定：
+    Implementation note.
     - has_reference_frame=True：
-        输入为 [B, 1 + H, E]（第 0 帧为基准，其余 H 帧为历史）：
-        - 若 diff_from_reference=True：只对后 H 帧做 (frame - baseline)，长度为 H；
-        - 若 diff_from_reference=False：直接使用全部 1+H 帧做 TCN（例如 Tabero 9 帧 marker）。
+        Reference-frame and history-window handling.
+        Implementation note.
+        Implementation note.
     - has_reference_frame=False：
-        输入视为不含显式基准帧，约定为 [B, H, E] 或更多帧，多出来的帧只保留最近 H 帧。
+        Reference-frame and history-window handling.
     """
 
     def __init__(
@@ -124,7 +124,7 @@ class TactileTCNEncoder(nnx.Module):
             raise ValueError("TactileTCNEncoder.history_len must be > 0.")
         if num_layers < 1:
             raise ValueError("TactileTCNEncoder.num_layers must be >= 1.")
-        self.history_len = history_len  # 这里的 history_len 统一指 config 里的 H（例如 8）。
+        self.history_len = history_len  # Implementation note.
         self.has_reference_frame = has_reference_frame
         self.diff_from_reference = diff_from_reference
 
@@ -138,11 +138,11 @@ class TactileTCNEncoder(nnx.Module):
                 rngs=rngs,
             )
         self.blocks = nnx.Dict(**blocks)
-        # 最后对时间维做「取最后一帧」池化，再线性映射到 embedding 维度。
+        # Implementation note.
         self.out_proj = nnx.Linear(hidden_dim, emb_dim, rngs=rngs)
 
     def __call__(self, tactile: jax.Array) -> at.Float[at.Array, "b emb"]:
-        # 允许输入为 [b, n, in_dim] 或 [b, in_dim]（后者视作单步序列）。
+        # Implementation note.
         if tactile.ndim == 2:
             tactile_seq = tactile[:, None, :]
         elif tactile.ndim == 3:
@@ -156,14 +156,14 @@ class TactileTCNEncoder(nnx.Module):
         H = self.history_len
 
         if self.has_reference_frame:
-            # 至少需要 2 帧（1 基准 + 至少 1 帧历史）。
+            # Reference-frame and history-window handling.
             if n < 2:
                 raise ValueError(
                     "TactileTCNEncoder with has_reference_frame=True expects at least 2 frames, "
                     f"got {n} (shape={tactile_seq.shape})."
                 )
             if self.diff_from_reference:
-                # 旧版差分逻辑：只用 H 帧历史，每帧减基准帧。
+                # Reference-frame and history-window handling.
                 max_hist = min(H, n - 1)
                 baseline = tactile_seq[:, 0:1, :]           # [B, 1, d]
                 history = tactile_seq[:, 1 : 1 + max_hist]  # [B, max_hist, d]
@@ -178,9 +178,9 @@ class TactileTCNEncoder(nnx.Module):
                     )
                 seq_for_tcn = history
             else:
-                # 新版“9 帧直接 TCN”逻辑：直接把 [baseline + H 帧历史] 一起送入 TCN。
+                # Reference-frame and history-window handling.
                 max_steps = min(H + 1, n)
-                seq_for_tcn = tactile_seq[:, :max_steps, :]  # [B, 1+H, d] 或更短
+                seq_for_tcn = tactile_seq[:, :max_steps, :]  # Tactile/force stream configuration and loss behavior.
                 if max_steps != H + 1:
                     logger.warning(
                         "TactileTCNEncoder(full-seq): expected 1+history_len=%d frames, "
@@ -190,7 +190,7 @@ class TactileTCNEncoder(nnx.Module):
                         max_steps,
                     )
         else:
-            # 不使用基准帧：只保留最近 H 帧。
+            # Reference-frame and history-window handling.
             if n >= H:
                 seq_for_tcn = tactile_seq[:, -H:, :]
             else:
@@ -205,7 +205,7 @@ class TactileTCNEncoder(nnx.Module):
         h = seq_for_tcn
         for block in self.blocks.values():
             h = block(h)
-        # 使用最后一个时间步的 hidden 作为整体 tactile 序列的表示。
+        # Tactile/force stream configuration and loss behavior.
         h_last = h[:, -1, :]  # [b, hidden_dim]
         return self.out_proj(h_last)  # [b, emb_dim]
 
@@ -220,10 +220,10 @@ def create_tactile_encoder(
     expert_width: int,
     rngs: nnx.Rngs,
 ) -> nnx.Module:
-    """根据配置创建 tactile 编码器（MLP 或 TCN）。
+    """Tactile/force stream configuration and loss behavior.
 
-    - encoder_type == "mlp"：沿用 flatten+MLP 路径（与旧实现完全一致）。
-    - encoder_type == "tcn"：使用 TCN，对 Tabero tacfield 提供基准帧差分 + 历史长度裁剪。
+    Encoder configuration and sequence handling.
+    Encoder configuration and sequence handling.
     """
     if tactile_dim_in <= 0:
         raise ValueError("create_tactile_encoder: tactile_dim_in must be > 0 when encoder is enabled.")
@@ -232,11 +232,11 @@ def create_tactile_encoder(
         if tactile_history is None:
             raise ValueError(
                 "Pi0Config.tactile_history must be set when tactile_encoder_type='tcn'. "
-                "例如：tacforce/tacfield 均可设为 8。"
+                "For example, both tacforce and tacfield can use 8."
             )
-        # 根据是否存在基准帧来推断“用于维度计算的时间步数”：
-        # - has_reference_frame=True（如 tacfield）：总步数 = 1(基准) + H(历史)
-        # - has_reference_frame=False（如 tacforce）：总步数 = H
+        # Reference-frame and history-window handling.
+        # Reference-frame and history-window handling.
+        # Implementation note.
         steps_for_dim = tactile_history + 1 if has_reference_frame else tactile_history
         if steps_for_dim <= 0:
             raise ValueError("tactile_history must be > 0 for TCN encoder.")
@@ -258,7 +258,7 @@ def create_tactile_encoder(
             rngs=rngs,
         )
 
-    # 默认：MLP 编码器。
+    # Encoder configuration and sequence handling.
     return MLPTactileEncoder(
         in_dim=tactile_dim_in,
         hidden_dim=2 * expert_width,

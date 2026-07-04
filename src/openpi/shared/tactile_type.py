@@ -5,24 +5,24 @@ class TactileType(Enum):
     """
     Tactile (force / torque) usage modes.
 
-    当前实现的 token 排布（只保留 expert 历史 + 未来联合预测这一条路径）：
+    Current token layout (only the expert history + future joint prediction path is retained):
 
         |<------- prefix (LLM) ---->|<----------- suffix (expert) --------------------->|
         |<- images ->|<- language ->|<- tactile(hist) ->|<- state ->|<- actions+tactile ->|
 
-    - prefix：只包含视觉 + 语言，不再有任何 tactile 相关 token。
-    - suffix：在 state 之前插入一个由多帧历史 tactile concat+MLP 得到的 expert token，
-      然后是 state token，最后是一整段 [action_dim] 维的动作序列（其中后 tactile_dim 维是力/力矩）。
+    - prefix: contains only vision + language, with no tactile-related tokens.
+    - suffix: inserts an expert token, produced from multi-frame historical tactile data via concat+MLP, before the state;
+      then comes the state token, followed by a full [action_dim]-dimensional action sequence whose last tactile_dim dimensions are force/torque.
     """
 
     NO = auto()
-    """不使用 tactile，但可以在数据中保留它用于统计等；模型完全忽略 tactile。"""
+    """Do not use tactile data. It may still remain in the data for statistics, but the model ignores it completely."""
 
     EXPERT_HIS_C_FUT = auto()
-    """当前唯一保留的“触觉/力矩模式”：
+    """The only currently retained tactile/force mode:
 
-    - 输入端：将多帧历史 tactile concat 成一条向量，经 MLP 投成一个 token，作为 expert 的条件（HIS_C）。
-    - 输出端：decoder 在 action 通道上同时学习 [动作 + 触觉力]，loss 内部分别对动作/触觉力做加权监督（FUT）。
+    - Input side: concatenate multi-frame tactile history into one vector and project it through an MLP into one token as the expert condition (HIS_C).
+    - Output side: the decoder learns [actions + tactile force] on the action channel, with separate weighted supervision for actions and tactile force inside the loss (FUT).
     """
 
 

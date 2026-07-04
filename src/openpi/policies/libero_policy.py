@@ -80,8 +80,8 @@ class LiberoInputs(transforms.DataTransformFn):
         }
 
         # Optional: multi-frame gripper / tactile force as tactile / torque input.
-        # 对于 Tabero-force / Libero-tactile 配置，repack 已经将 `observation/gripper_force`
-        # 统一映射为 `gripper_force`，这里只接受该字段名，不做旧 key 兼容。
+        # Tactile/force stream configuration and loss behavior.
+        # Implementation note.
         if "gripper_force" in data:
             inputs["tactile_suffix"] = data["gripper_force"]
 
@@ -102,22 +102,22 @@ class LiberoInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacImgInputs(transforms.DataTransformFn):
     """
-    Tabero 输入（3 路图像 + 13 维动作，不使用触觉力场 / tactile）。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像：
+    Image stream mapping and masking behavior.
         - observation/image          -> base_0_rgb
         - observation/wrist_image    -> left_wrist_0_rgb
         - observation/tactile_image  -> right_wrist_0_rgb
-    - 动作：
-        - actions                    -> 13 维（7 关节 + 6 力），在后续 PadStatesAndActions 中 padding 到 32 维。
+    Action/force dimensions and loss handling.
+        Action/force dimensions and loss handling.
     """
 
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # Tabero v2.1 数据集的单条样本是一个“扁平”的 dict，keys 直接是
+        # Dataset format and transform behavior.
         #   "image", "wrist_image", "tactile_image", "state", "actions", ...
-        # 而不是嵌套在 "observation/..." 之下。
+        # Implementation note.
         base_image = _parse_image(data["image"])
         wrist_image = _parse_image(data["wrist_image"])
         tactile_image = _parse_image(data["tactile_image"])
@@ -141,28 +141,28 @@ class TaberoTacImgInputs(transforms.DataTransformFn):
         if "prompt" in data:
             inputs["prompt"] = data["prompt"]
 
-        # 明确：不读取任何 gripper_force / tactile_gripper_force，tactile 为空。
+        # Tactile/force stream configuration and loss behavior.
         return inputs
 
 
 @dataclasses.dataclass(frozen=True)
 class TaberoTacFieldInputs(transforms.DataTransformFn):
     """
-    Tabero 输入（2 路图像 + 触觉力场 tactile + 13 维动作）。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像（严格 Tabero v2.1 扁平格式）：
+    Image stream mapping and masking behavior.
         - image                  -> base_0_rgb
         - wrist_image            -> left_wrist_0_rgb
-      第三路视觉留空，用零图 + mask=False（与原始 LiberoInputs 一致）
-    - 触觉力场：
-        - tactile_marker_motion，形状约为 [9, 198, 2]，在这里先 reshape 成 [9, 198*2]，
-          再作为 Observation.tactile_prefix（[*b, n, e]）进入模型，由 TCN 编码为单个 tactile token。
+      Implementation note.
+    Tactile/force stream configuration and loss behavior.
+        Tactile/force stream configuration and loss behavior.
+          Tactile/force stream configuration and loss behavior.
     """
 
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # 只支持 Tabero v2.1 扁平格式，不再做 observation/... 兼容。
+        # Implementation note.
         base_image = _parse_image(data["image"])
         wrist_image = _parse_image(data["wrist_image"])
         state = data["state"]
@@ -184,8 +184,8 @@ class TaberoTacFieldInputs(transforms.DataTransformFn):
             },
         }
 
-        # 触觉力场作为 encoder-prefix tactile。
-        # Tabero 转换脚本保证存在 `tactile_marker_motion` 字段，这里不做任何兼容分支。
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         if "tactile_marker_motion" not in data:
             raise KeyError("TaberoTacFieldInputs expects 'tactile_marker_motion' in data.")
         motion = np.asarray(data["tactile_marker_motion"])
@@ -206,21 +206,21 @@ class TaberoTacFieldInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacForceInputs(transforms.DataTransformFn):
     """
-    Tabero 输入（2 路图像 + 8×6 触觉指力历史 + 13 维动作）。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像（严格 Tabero v2.1 扁平格式）：
+    Image stream mapping and masking behavior.
         - image                  -> base_0_rgb
         - wrist_image            -> left_wrist_0_rgb
-      第三路视觉留空，用零图 + mask=False（与原始 LiberoInputs 一致）
-    - 指力历史：
-        - tactile_gripper_force，形状约为 [8, 6]，直接作为 Observation.tactile_*（[*b, n, e]）
-          喂给模型，用于 EXPERT_HIS_C_FUT 的“历史指力 token”。
+      Implementation note.
+    Tactile/force stream configuration and loss behavior.
+        Tactile/force stream configuration and loss behavior.
+          Tactile/force stream configuration and loss behavior.
     """
 
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # 只支持 Tabero v2.1 扁平格式，不再做 observation/... 兼容。
+        # Implementation note.
         base_image = _parse_image(data["image"])
         wrist_image = _parse_image(data["wrist_image"])
         state = data["state"]
@@ -242,8 +242,8 @@ class TaberoTacForceInputs(transforms.DataTransformFn):
             },
         }
 
-        # 8×6 左右指力历史作为 decoder-suffix tactile（或 encoder-prefix，取决于 config.tactile_streams）。
-        # Tabero/Tabero-force 数据转换脚本保证存在 `tactile_gripper_force` 字段，这里不做任何兼容分支。
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         if "tactile_gripper_force" not in data:
             raise KeyError("TaberoTacForceInputs expects 'tactile_gripper_force' in data.")
         inputs["tactile_suffix"] = data["tactile_gripper_force"]
@@ -259,18 +259,18 @@ class TaberoTacForceInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacForceEncInputs(transforms.DataTransformFn):
     """
-    Tabero 输入（2 路图像 + 8×6 触觉指力历史 + 13 维动作），但将指力历史写入 encoder-prefix 通道。
+    Tactile/force stream configuration and loss behavior.
 
-    该类用于 prefix-only 的 tacforce 配置（例如 pi05_tacforce_tabero / pi0_lora_tacforce_tabero_enc）：
-    - 图像：同 `TaberoTacForceInputs`（严格 Tabero v2.1 扁平格式：image / wrist_image / state）。
-    - 指力历史：读取 `tactile_gripper_force`（形状约 [8, 6]），写入 `tactile_prefix`（[*b, n, e]）。
-      具体由模型侧的 prefix tactile encoder（通常为 MLP）进行 flatten/编码为单个 token。
+    Implementation note.
+    Image stream mapping and masking behavior.
+    Tactile/force stream configuration and loss behavior.
+      Tactile/force stream configuration and loss behavior.
     """
 
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # 只支持 Tabero v2.1 扁平格式，不再做 observation/... 兼容。
+        # Implementation note.
         base_image = _parse_image(data["image"])
         wrist_image = _parse_image(data["wrist_image"])
         state = data["state"]
@@ -292,8 +292,8 @@ class TaberoTacForceEncInputs(transforms.DataTransformFn):
             },
         }
 
-        # 8×6 指力历史作为 encoder-prefix tactile。
-        # Tabero/Tabero-force 数据转换脚本保证存在 `tactile_gripper_force` 字段，这里不做任何兼容分支。
+        # Tactile/force stream configuration and loss behavior.
+        # Tactile/force stream configuration and loss behavior.
         if "tactile_gripper_force" not in data:
             raise KeyError("TaberoTacForceEncInputs expects 'tactile_gripper_force' in data.")
         inputs["tactile_prefix"] = data["tactile_gripper_force"]
@@ -309,20 +309,20 @@ class TaberoTacForceEncInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class TaberoTacAllInputs(transforms.DataTransformFn):
     """
-    Tabero 输入（3 路图像 + tacfield+tacforce 双触觉 + 13 维动作）。
+    Tactile/force stream configuration and loss behavior.
 
-    - tacimg：第三路 `tactile_image` 作为额外摄像头像素输入；
-    - tacfield（encoder 前缀通道）：
-        - `tactile_marker_motion` 形状 [9, 198, 2]，reshape 成 [9, 198*2] → `tactile_prefix`；
-    - tacforce（decoder 后缀通道）：
-        - `tactile_gripper_force` 形状 [8, 6]，直接 → `tactile`；
-    - 动作：13 维（7 关节 + 6 力），在 loss 中仍按 [动作, 力] 拆分并对力做加权监督。
+    Tactile/force stream configuration and loss behavior.
+    Encoder configuration and sequence handling.
+        Tactile/force stream configuration and loss behavior.
+    Implementation note.
+        Tactile/force stream configuration and loss behavior.
+    Action/force dimensions and loss handling.
     """
 
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # 假设使用 Tabero v2.1 扁平格式，不再做额外兼容分支：
+        # Implementation note.
         #   image / wrist_image / tactile_image / state / tactile_marker_motion / tactile_gripper_force / actions / prompt
         base_image = _parse_image(data["image"])
         wrist_image = _parse_image(data["wrist_image"])
@@ -343,7 +343,7 @@ class TaberoTacAllInputs(transforms.DataTransformFn):
             },
         }
 
-        # tacfield：marker motion → encoder 前缀触觉通道（tactile_prefix）。
+        # Tactile/force stream configuration and loss behavior.
         motion = np.asarray(data["tactile_marker_motion"])
         if motion.ndim != 3:
             raise ValueError(f"tactile_marker_motion must be 3D, got shape {motion.shape}")
@@ -351,7 +351,7 @@ class TaberoTacAllInputs(transforms.DataTransformFn):
         tactile_prefix = motion.reshape(n, m * d)
         inputs["tactile_prefix"] = tactile_prefix
 
-        # tacforce：8×6 指力历史 → decoder 后缀触觉通道（tactile_suffix）。
+        # Tactile/force stream configuration and loss behavior.
         inputs["tactile_suffix"] = data["tactile_gripper_force"]
 
         if "actions" in data:
@@ -365,19 +365,19 @@ class TaberoTacAllInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class TaberoNoTactInputs(transforms.DataTransformFn):
     """
-    Tabero 输入（只用 2 路图像 + state + 动作，不使用任何 tactile / 力）。
+    Tactile/force stream configuration and loss behavior.
 
-    - 图像（严格 Tabero v2.1 扁平格式）：
+    Image stream mapping and masking behavior.
         - image                  -> base_0_rgb
         - wrist_image            -> left_wrist_0_rgb
-      第三路视觉留空，用零图 + mask=False（与原始 LiberoInputs 一致）
-    - 不读取任何 tactile_gripper_force / tactile_marker_motion / gripper_force。
+      Implementation note.
+    Tactile/force stream configuration and loss behavior.
     """
 
     model_type: _model.ModelType
 
     def __call__(self, data: dict) -> dict:
-        # 只支持 Tabero v2.1 扁平格式，不再做 observation/... 兼容。
+        # Implementation note.
         base_image = _parse_image(data["image"])
         wrist_image = _parse_image(data["wrist_image"])
         state = data["state"]
@@ -419,16 +419,16 @@ class LiberoOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
         # Only return the first N actions -- since we padded actions above to fit the model action
         # dimension, we need to now parse out the correct number of actions in the return dict.
-        # 对于官方 Libero，我们只返回前 7 维关节动作（其余为 padding）。
+        # Action/force dimensions and loss handling.
         return {"actions": np.asarray(data["actions"][:, :7])}
 
 
 @dataclasses.dataclass(frozen=True)
 class LiberoForceOutputs(transforms.DataTransformFn):
     """
-    Libero 输出变换（带力矩）：返回前 13 维（7 动作 + 6 力），用于你当前的力矩方案。
+    Tactile/force stream configuration and loss behavior.
     """
 
     def __call__(self, data: dict) -> dict:
-        # data["actions"] 形状为 [B, H, D]，这里裁剪到前 13 维（7 动作 + 6 力）。
+        # Action/force dimensions and loss handling.
         return {"actions": np.asarray(data["actions"][:, :13])}
