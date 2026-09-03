@@ -1,4 +1,5 @@
 import logging
+import math
 from typing import Optional
 
 import flax.nnx as nnx
@@ -9,6 +10,31 @@ from openpi.shared import array_typing as at
 
 
 logger = logging.getLogger("openpi")
+
+
+class TactileLoRALinear(nnx.Linear):
+    """Linear + alpha/rank * xAB, retaining the pretrained kernel/bias paths."""
+
+    def __init__(self, in_features: int, out_features: int, *, rank: int, alpha: float, rngs: nnx.Rngs):
+        if rank <= 0 or not math.isfinite(alpha) or alpha <= 0:
+            raise ValueError("Tactile LoRA requires positive rank and finite positive alpha.")
+        super().__init__(in_features, out_features, rngs=rngs)
+        self.lora_scale = alpha / rank
+        self.lora_a = nnx.Param(jax.random.normal(rngs.params(), (in_features, rank)) * 0.01)
+        # A must be nonzero so B receives gradients on the first backward pass.
+        self.lora_b = nnx.Param(jnp.zeros((rank, out_features), dtype=self.kernel.value.dtype))
+
+    def __call__(self, inputs: jax.Array) -> jax.Array:
+        base = super().__call__(inputs)
+        adapter = inputs.astype(base.dtype) @ self.lora_a.value.astype(base.dtype)
+        adapter = adapter @ self.lora_b.value.astype(base.dtype)
+        return base + self.lora_scale * adapter
+
+
+def _linear(in_dim: int, out_dim: int, *, rngs: nnx.Rngs, lora_rank: int, lora_alpha: float) -> nnx.Linear:
+    if lora_rank == 0:
+        return nnx.Linear(in_dim, out_dim, rngs=rngs)
+    return TactileLoRALinear(in_dim, out_dim, rank=lora_rank, alpha=lora_alpha, rngs=rngs)
 
 
 class MLPTactileEncoder(nnx.Module):
@@ -58,6 +84,8 @@ class TactileTCNBlock(nnx.Module):
         out_dim: int,
         kernel_size: int = 3,
         rngs: Optional[nnx.Rngs] = None,
+        lora_rank: int = 0,
+        lora_alpha: float = 16.0,
     ):
         super().__init__()
         if kernel_size < 1:
@@ -65,11 +93,15 @@ class TactileTCNBlock(nnx.Module):
         self.kernel_size = kernel_size
         kernels: dict[str, nnx.Linear] = {}
         for k in range(kernel_size):
-            kernels[f"kernel_{k}"] = nnx.Linear(in_dim, out_dim, rngs=rngs)
+            kernels[f"kernel_{k}"] = _linear(
+                in_dim, out_dim, rngs=rngs, lora_rank=lora_rank, lora_alpha=lora_alpha,
+            )
         self.kernels = nnx.Dict(**kernels)
         self.residual_proj = None
         if in_dim != out_dim:
-            self.residual_proj = nnx.Linear(in_dim, out_dim, rngs=rngs)
+            self.residual_proj = _linear(
+                in_dim, out_dim, rngs=rngs, lora_rank=lora_rank, lora_alpha=lora_alpha,
+            )
 
     def __call__(self, x: jax.Array) -> jax.Array:
         if x.ndim != 3:
@@ -118,6 +150,8 @@ class TactileTCNEncoder(nnx.Module):
         num_layers: int = 2,
         kernel_size: int = 3,
         rngs: Optional[nnx.Rngs] = None,
+        lora_rank: int = 0,
+        lora_alpha: float = 16.0,
     ):
         super().__init__()
         if history_len <= 0:
@@ -136,10 +170,14 @@ class TactileTCNEncoder(nnx.Module):
                 out_dim=hidden_dim,
                 kernel_size=kernel_size,
                 rngs=rngs,
+                lora_rank=lora_rank,
+                lora_alpha=lora_alpha,
             )
         self.blocks = nnx.Dict(**blocks)
         # Implementation note.
-        self.out_proj = nnx.Linear(hidden_dim, emb_dim, rngs=rngs)
+        self.out_proj = _linear(
+            hidden_dim, emb_dim, rngs=rngs, lora_rank=lora_rank, lora_alpha=lora_alpha,
+        )
 
     def __call__(self, tactile: jax.Array) -> at.Float[at.Array, "b emb"]:
         # Implementation note.
@@ -219,6 +257,8 @@ def create_tactile_encoder(
     diff_from_reference: bool,
     expert_width: int,
     rngs: nnx.Rngs,
+    lora_rank: int = 0,
+    lora_alpha: float = 16.0,
 ) -> nnx.Module:
     """Tactile/force stream configuration and loss behavior.
 
@@ -227,6 +267,10 @@ def create_tactile_encoder(
     """
     if tactile_dim_in <= 0:
         raise ValueError("create_tactile_encoder: tactile_dim_in must be > 0 when encoder is enabled.")
+    if lora_rank < 0:
+        raise ValueError("tactile LoRA rank must be nonnegative.")
+    if lora_rank and encoder_type != "tcn":
+        raise ValueError("Tactile LoRA is currently supported only for the TCN encoder.")
 
     if encoder_type == "tcn":
         if tactile_history is None:
@@ -256,6 +300,8 @@ def create_tactile_encoder(
             has_reference_frame=has_reference_frame,
             diff_from_reference=diff_from_reference,
             rngs=rngs,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
         )
 
     # Encoder configuration and sequence handling.
@@ -265,5 +311,4 @@ def create_tactile_encoder(
         emb_dim=expert_width,
         rngs=rngs,
     )
-
 

@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from typing import TYPE_CHECKING
 
 import flax.nnx as nnx
@@ -49,6 +50,8 @@ class Pi0Config(_model.BaseModelConfig):
     # Tactile/force stream configuration and loss behavior.
     # Action/force dimensions and loss handling.
     effective_action_dim: int | None = None
+    # Optional action-only objective; keeps checkpoint architecture and tactile conditioning unchanged.
+    supervised_action_dim: int | None = None
     # Tactile/force stream configuration and loss behavior.
     # Tactile/force stream configuration and loss behavior.
     tactile_loss_weight: float = 0.1
@@ -84,6 +87,9 @@ class Pi0Config(_model.BaseModelConfig):
     tactile_prefix_encoder_type: str | None = None
     tactile_prefix_use_reference_frame: bool | None = None
     tactile_prefix_diff_from_reference: bool | None = None
+    # Opt-in low-rank adaptation of the prefix TCN; zero preserves legacy architecture.
+    tactile_prefix_lora_rank: int = 0
+    tactile_prefix_lora_alpha: float = 16.0
 
     # Tactile/force stream configuration and loss behavior.
     # Tactile/force stream configuration and loss behavior.
@@ -101,6 +107,21 @@ class Pi0Config(_model.BaseModelConfig):
     tactile_suffix_placement: str = "suffix"
 
     def __post_init__(self):
+        if self.tactile_prefix_lora_rank < 0:
+            raise ValueError("tactile_prefix_lora_rank must be nonnegative")
+        if self.tactile_prefix_lora_rank:
+            if not math.isfinite(self.tactile_prefix_lora_alpha) or self.tactile_prefix_lora_alpha <= 0:
+                raise ValueError("tactile_prefix_lora_alpha must be finite and positive")
+            if (
+                self.tactile_type is not TactileType.EXPERT_HIS_C_FUT
+                or "tactile_prefix" not in self.tactile_streams
+                or self.tactile_prefix_encoder_type != "tcn"
+                or not self.tactile_prefix_dim_in
+                or self.tactile_prefix_dim_in <= 0
+            ):
+                raise ValueError("Prefix LoRA requires an enabled EXPERT_HIS_C_FUT tactile_prefix TCN")
+        if self.supervised_action_dim is not None and not 1 <= self.supervised_action_dim <= self.action_dim:
+            raise ValueError("supervised_action_dim must be between 1 and action_dim")
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:

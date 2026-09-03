@@ -1,4 +1,5 @@
 from collections.abc import Iterator, Sequence
+import dataclasses
 import logging
 import multiprocessing
 import os
@@ -126,6 +127,15 @@ class FakeDataset(Dataset):
         return self._num_samples
 
 
+class EpisodeSafeLeRobotDataset(lerobot_dataset.LeRobotDataset):
+    """LeRobot v0.3.3 query offsets are subset-relative, while stored episode IDs are not."""
+
+    def _get_query_indices(self, idx, ep_idx):
+        if self.episodes is not None:
+            ep_idx = self.episodes.index(ep_idx)
+        return super()._get_query_indices(idx, ep_idx)
+
+
 def create_torch_dataset(
     data_config: _config.DataConfig, action_horizon: int, model_config: _model.BaseModelConfig
 ) -> Dataset:
@@ -137,14 +147,24 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     rev = data_config.lerobot_revision
-    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, revision=rev)
-    dataset = lerobot_dataset.LeRobotDataset(
+    dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id, root=data_config.root, revision=rev)
+    if data_config.episodes is not None:
+        available = set(dataset_meta.episodes)
+        if missing := set(data_config.episodes) - available:
+            raise ValueError(f"Requested episodes not present in dataset: {sorted(missing)}")
+    dataset = EpisodeSafeLeRobotDataset(
         data_config.repo_id,
+        root=data_config.root,
+        episodes=list(data_config.episodes) if data_config.episodes is not None else None,
+        video_backend=data_config.video_backend,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
         revision=rev,
     )
+    if data_config.columns is not None:
+        # Avoid materializing depth/wrench tensors on every action-chunk query.
+        dataset.hf_dataset = dataset.hf_dataset.select_columns(list(data_config.columns))
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
@@ -211,6 +231,7 @@ def create_data_loader(
     num_batches: int | None = None,
     skip_norm_stats: bool = False,
     framework: Literal["jax", "pytorch"] = "jax",
+    split: Literal["train", "validation"] = "train",
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -223,6 +244,12 @@ def create_data_loader(
         framework: The framework to use ("jax" or "pytorch").
     """
     data_config = config.data.create(config.assets_dirs, config.model)
+    if split == "validation":
+        if not data_config.validation_episodes:
+            raise ValueError("No validation episodes configured")
+        data_config = dataclasses.replace(
+            data_config, episodes=data_config.validation_episodes, validation_episodes=(),
+        )
     logging.info(f"data_config: {data_config}")
 
     return create_torch_data_loader(
@@ -237,6 +264,7 @@ def create_data_loader(
         seed=config.seed,
         skip_norm_stats=skip_norm_stats,
         framework=framework,
+        max_samples=config.batch_size * num_batches if split == "validation" and num_batches else None,
     )
 
 
@@ -253,6 +281,7 @@ def create_torch_data_loader(
     num_workers: int = 0,
     seed: int = 0,
     framework: str = "jax",
+    max_samples: int | None = None,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -272,6 +301,11 @@ def create_torch_data_loader(
         seed: The seed to use for shuffling the data.
     """
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
+    if max_samples is not None:
+        # Spread bounded smoke validation across all held-out episodes, not only their first frames.
+        indices = np.linspace(0, len(dataset) - 1, min(max_samples, len(dataset)), dtype=int)
+        dataset = torch.utils.data.Subset(dataset, indices.tolist())
+        num_batches = len(indices) // batch_size
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
     # Use TorchDataLoader for both frameworks

@@ -1,5 +1,6 @@
 import dataclasses
 import functools
+import json
 import logging
 import platform
 from typing import Any
@@ -23,11 +24,24 @@ import openpi.training.checkpoints as _checkpoints
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.training.optimizer as _optimizer
+import openpi.training.numerics as numerics
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
 from openpi.models.pi0 import Pi0
 from openpi.shared.tactile_type import TactileType
+
+
+def eval_step(rng, state, batch):
+    """No augmentation or updates. Fixed RNGs make before/after flow losses comparable."""
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
+    observation, actions = batch
+    if isinstance(model, Pi0):
+        loss, components = model.compute_loss(rng, observation, actions, train=False, return_components=True)
+        return {"loss": jnp.mean(loss), "action_loss": components["action_loss"]}
+    loss = model.compute_loss(rng, observation, actions, train=False)
+    return {"loss": jnp.mean(loss)}
 
 
 def init_logging():
@@ -185,6 +199,14 @@ def train_step(
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
     new_params = optax.apply_updates(params, updates)
+    finite_checks = {
+        "inputs_finite": numerics.all_finite(batch),
+        "loss_finite": numerics.all_finite((loss, aux)),
+        "grads_finite": numerics.all_finite(grads),
+        "updates_finite": numerics.all_finite(updates),
+        "candidate_params_finite": numerics.all_finite(new_params),
+        "optimizer_finite": numerics.all_finite(new_opt_state),
+    }
 
     # Update the model in place and return the new full state.
     nnx.update(model, new_params)
@@ -198,6 +220,10 @@ def train_step(
                 lambda old, new: state.ema_decay * old + (1 - state.ema_decay) * new, state.ema_params, new_params
             ),
         )
+        finite_checks["ema_finite"] = numerics.all_finite(new_state.ema_params)
+
+    update_applied = numerics.all_finite((loss, aux)) & jnp.all(jnp.stack(list(finite_checks.values())))
+    new_state = numerics.accept_finite_update(state, new_state, update_applied)
 
     # Filter out params that aren't kernels.
     kernel_params = nnx.state(
@@ -215,6 +241,9 @@ def train_step(
         # Implementation note.
         "action_loss": aux["action_loss"],
         "tactile_loss": aux["tactile_loss"],
+        **finite_checks,
+        "update_applied": update_applied,
+        "first_bad_grad_index": numerics.first_nonfinite_leaf(grads),
     }
     return new_state, info
 
@@ -253,6 +282,14 @@ def main(config: _config.TrainConfig):
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
+    eval_loader = None
+    if config.eval_interval:
+        if config.eval_interval < 0 or config.eval_num_batches <= 0:
+            raise ValueError("Evaluation interval and batch count must be positive")
+        eval_loader = _data_loader.create_data_loader(
+            config, sharding=data_sharding, split="validation", shuffle=False,
+            num_batches=config.eval_num_batches,
+        )
 
     # Log images from first batch to sanity check.
     images_to_log = [
@@ -267,6 +304,79 @@ def main(config: _config.TrainConfig):
 
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
+
+    trainable = train_state.params.filter(config.trainable_filter)
+    trainable_count = sum(x.size for x in jax.tree.leaves(trainable))
+    total_count = sum(x.size for x in jax.tree.leaves(train_state.params))
+    logging.info("Trainable parameters: %d / %d (%.3f%%)",
+                 trainable_count, total_count, 100 * trainable_count / total_count)
+    logging.info("Trainable paths: %s", list(trainable.flat_state()))
+    gradient_paths = [jax.tree_util.keystr(p) for p, _ in jax.tree_util.tree_flatten_with_path(trainable)[0]]
+    if not bool(jax.device_get(numerics.all_finite((train_state.params, train_state.opt_state)))):
+        raise FloatingPointError("Initial model or optimizer contains non-finite values")
+    if getattr(config.model, "tactile_prefix_lora_rank", 0):
+        tactile_lora = {
+            k: v for k, v in traverse_util.flatten_dict(trainable.to_pure_dict(), sep="/").items()
+            if k.startswith("tactile_prefix_encoder/") and "/lora_" in k
+        }
+        if not tactile_lora:
+            raise ValueError("Tactile LoRA configured but no tactile adapter parameters are trainable")
+        logging.info("Trainable tactile LoRA: %d parameters in %d leaves",
+                     sum(v.size for v in tactile_lora.values()), len(tactile_lora))
+    metrics_path = config.checkpoint_dir / "metrics.jsonl"
+    (config.checkpoint_dir / "run_config.txt").write_text(repr(config))
+
+    def save_numerical_failure(info, failed_batch):
+        """The compiled step has already rejected the update, preserving a healthy state."""
+        info = {k: float(v) for k, v in jax.device_get(info).items()}
+        bad_index = int(info["first_bad_grad_index"])
+        report = {
+            "healthy_updates": int(train_state.step),
+            "attempted_update": int(train_state.step) + 1,
+            "first_bad_gradient": gradient_paths[bad_index] if bad_index >= 0 else None,
+            "metrics": {k: v if np.isfinite(v) else str(v) for k, v in info.items()},
+            "seed": config.seed,
+            "note": "Invalid update rejected; no batch skipped. State below is BEFORE failed update.",
+        }
+        obs, targets = failed_batch
+        arrays = traverse_util.flatten_dict({"observation": obs.to_dict(), "actions": targets}, sep="/")
+        np.savez_compressed(config.checkpoint_dir / "failed_batch.npz",
+                            **{k: np.asarray(jax.device_get(v)) for k, v in arrays.items()})
+        (config.checkpoint_dir / "numerical_failure.json").write_text(json.dumps(report, indent=2, allow_nan=False))
+        healthy_step = max(0, int(train_state.step) - 1)
+        if healthy_step not in checkpoint_manager.all_steps():
+            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, healthy_step)
+        checkpoint_manager.wait_until_finished()
+        raise FloatingPointError(f"Rejected non-finite update; saved healthy checkpoint and diagnostics: {report}")
+
+    def record_metrics(kind, step, values):
+        values = {k: float(v) for k, v in values.items()}
+        if not all(np.isfinite(v) for v in values.values()):
+            raise FloatingPointError(f"Non-finite {kind} metrics at step {step}: {values}")
+        with metrics_path.open("a") as f:
+            f.write(json.dumps({"kind": kind, "step": step, **values}) + "\n")
+
+    peval_step = jax.jit(eval_step)
+
+    def evaluate(step):
+        if eval_loader is None:
+            return
+        eval_infos = []
+        for index, eval_batch in enumerate(eval_loader):
+            with sharding.set_mesh(mesh):
+                info = peval_step(jax.random.fold_in(jax.random.key(config.seed + 1), index), train_state, eval_batch)
+            eval_infos.append(jax.device_get(info))
+        if not eval_infos:
+            raise ValueError("Validation loader produced no batches")
+        means = jax.tree.map(lambda *xs: float(np.mean(xs)), *eval_infos)
+        means["num_batches"] = len(eval_infos)
+        means["num_frames"] = len(eval_infos) * config.batch_size
+        record_metrics("validation", step, means)
+        logging.info("Validation step %d: %s", step, means)
+        if config.wandb_enabled:
+            wandb.log({f"validation/{k}": v for k, v in means.items()}, step=step)
+
+    evaluate(int(train_state.step))
 
     ptrain_step = jax.jit(
         functools.partial(train_step, config),
@@ -287,15 +397,23 @@ def main(config: _config.TrainConfig):
     for step in pbar:
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
+        # Check every update, before the next batch or averaged logging. Never continue
+        # training after rejection: reproduce/fix the failing batch instead.
+        if not bool(jax.device_get(info["update_applied"])):
+            save_numerical_failure(info, batch)
         infos.append(info)
-        if step % config.log_interval == 0:
+        if step % config.log_interval == 0 or step == config.num_train_steps - 1:
             stacked_infos = common_utils.stack_forest(infos)
             reduced_info = jax.device_get(jax.tree.map(jnp.mean, stacked_infos))
             info_str = ", ".join(f"{k}={v:.4f}" for k, v in reduced_info.items())
             pbar.write(f"Step {step}: {info_str}")
             wandb.log(reduced_info, step=step)
+            record_metrics("train", step + 1, reduced_info)
             infos = []
         batch = next(data_iter)
+
+        if eval_loader is not None and ((step + 1) % config.eval_interval == 0 or step == config.num_train_steps - 1):
+            evaluate(step + 1)
 
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)

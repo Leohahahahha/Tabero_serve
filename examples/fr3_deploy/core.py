@@ -1,0 +1,239 @@
+"""CPU-only FR3 deployment contracts. No ROS, model loading, or network on import."""
+
+from collections import deque
+from dataclasses import dataclass
+import math
+
+import numpy as np
+from scipy.spatial.transform import Rotation
+
+PROTOCOL = "tabero_fr3_absolute_v1"
+
+
+def finite(value, shape, name):
+    array = np.asarray(value, dtype=np.float64)
+    if array.shape != shape or not np.isfinite(array).all():
+        raise ValueError(f"{name}: expected finite {shape}, got {array.shape}")
+    return array
+
+
+def pose_to_state(pose, width):
+    pose = finite(pose, (7,), "XYZ + XYZW pose")
+    norm = np.linalg.norm(pose[3:])
+    if not 0.99 <= norm <= 1.01:
+        raise ValueError("Invalid measured quaternion norm")
+    if not np.isfinite(width) or not 0 <= width <= 0.085001:
+        raise ValueError("Measured gripper_width must be total width in meters [0,0.085]")
+    return np.concatenate([pose[:3], Rotation.from_quat(pose[3:]).as_rotvec(), [width / 2]]).astype(np.float32)
+
+
+def action_to_http(action):
+    action = finite(action, (7,), "absolute model action")
+    if not 0 <= action[6] <= 0.0425001:
+        raise ValueError("Predicted single-finger position outside [0,0.0425] m")
+    return np.concatenate([action[:3], Rotation.from_rotvec(action[3:6]).as_quat()]), float(2 * action[6])
+
+
+def state_from_http(payload):
+    # Deliberately no fallback to gripper_pos: supplied server reports that in [0,1].
+    return pose_to_state(payload["pose"], float(payload["gripper_width"]))
+
+
+def marker_positions(left, right, scale=1.0):
+    left = finite(left, (240, 320, 2), "left shear")
+    right = finite(right, (240, 320, 2), "right shear")
+    y = np.rint(np.linspace(0, 239, 9)).astype(int)
+    x = np.rint(np.linspace(0, 319, 11)).astype(int)
+    gx, gy = np.meshgrid(x.astype(np.float32), y.astype(np.float32))
+    side = np.stack([gx, gy], axis=-1).reshape(99, 2)
+    reference = np.concatenate([side, side])
+    shear = np.concatenate([left[np.ix_(y, x)].reshape(99, 2), right[np.ix_(y, x)].reshape(99, 2)])
+    current = reference + np.float32(scale) * shear.astype(np.float32)
+    if not np.isfinite(current).all():
+        raise ValueError("Non-finite marker coordinates")
+    return reference, current.astype(np.float32)
+
+
+class MarkerHistory:
+    def __init__(self, scale=1.0):
+        self.scale = scale
+        self.frames = deque(maxlen=8)
+
+    def append(self, left, right):
+        reference, current = marker_positions(left, right, self.scale)
+        if not self.frames:
+            self.frames.extend(current.copy() for _ in range(7))
+        self.frames.append(current)
+        return np.stack([reference, *self.frames]).astype(np.float32)
+
+
+def decode_image(msg):
+    """Decode ROS Image including row padding and endianness; output RGB or shear."""
+    formats = {
+        "rgb8": ("u1", 3),
+        "bgr8": ("u1", 3),
+        "rgba8": ("u1", 4),
+        "bgra8": ("u1", 4),
+        "32FC2": (">f4" if msg.is_bigendian else "<f4", 2),
+    }
+    if msg.encoding not in formats:
+        raise ValueError(f"Unsupported image encoding {msg.encoding}")
+    dtype, channels = formats[msg.encoding]
+    dtype = np.dtype(dtype)
+    row_bytes = msg.width * channels * dtype.itemsize
+    if msg.width <= 0 or msg.height <= 0 or msg.step < row_bytes or len(msg.data) != msg.height * msg.step:
+        raise ValueError("Invalid ROS image size/step/data")
+    array = np.ndarray(
+        (msg.height, msg.width, channels),
+        dtype=dtype,
+        buffer=bytes(msg.data),
+        strides=(msg.step, channels * dtype.itemsize, dtype.itemsize),
+    ).copy()
+    if msg.encoding == "32FC2":
+        return array.astype(np.float32)
+    array = array[..., :3]
+    if msg.encoding in ("bgr8", "bgra8"):
+        array = array[..., ::-1]
+    return np.ascontiguousarray(array)
+
+
+def crop_front(image, conversion):
+    spec = conversion["front_image_crop"]
+    if list(image.shape) != spec["source_shape"] or image.dtype != np.uint8:
+        raise ValueError(f"Front camera resolution/dtype differs from training: {image.shape}/{image.dtype}")
+    if spec["enabled"]:
+        x0, y0, x1, y1 = spec["roi_xyxy"]
+        if not (0 <= x0 < x1 <= image.shape[1] and 0 <= y0 < y1 <= image.shape[0]):
+            raise ValueError("Invalid training front ROI")
+        image = image[y0:y1, x0:x1]
+    if list(image.shape) != spec["output_shape"]:
+        raise ValueError("Front crop does not match training metadata")
+    return np.ascontiguousarray(image)
+
+
+def decode_packed_shear(msg, layout, encoding):
+    """Use the collector's dmtac_w_ipc metadata, never inferred binary offsets."""
+    size = int(layout["packed_frame_bytes"])
+    if (msg.height, msg.width, msg.step, msg.encoding, len(msg.data)) != (1, size, size, encoding, size):
+        raise ValueError("DM-Tac packed size/encoding differs from configured IPC schema")
+    if layout["byte_order_little_endian"] != 1 or msg.is_bigendian:
+        raise ValueError("DM-Tac packed payload must be little endian")
+    if [layout[f"shear_{k}"] for k in ("height", "width", "channels", "itemsize")] != [240, 320, 2, 4]:
+        raise ValueError("Unsupported IPC shear shape/type")
+    start, length = int(layout["shear_start"]), int(layout["shear_len"])
+    if length != 240 * 320 * 2 * 4 or start < 0 or start + length > size:
+        raise ValueError("Invalid IPC shear byte range")
+    shear = np.frombuffer(bytes(msg.data), dtype="<f4", count=240 * 320 * 2, offset=start)
+    return shear.reshape(240, 320, 2).copy()
+
+
+def validate_conversion(conversion):
+    if conversion["output_contract"] != "tabero_action_only_lerobot_v2.1":
+        raise ValueError("Unsupported conversion contract")
+    field = conversion["marker_field"]
+    if field["shape"] != [9, 198, 2] or field["side_order"] != ["left", "right"]:
+        raise ValueError("Unsupported tactile marker shape/order")
+    for key, size, count in (("grid_y_indices", 240, 9), ("grid_x_indices", 320, 11)):
+        if field[key] != np.rint(np.linspace(0, size - 1, count)).astype(int).tolist():
+            raise ValueError("Marker grid differs from the supported converter")
+    if not np.isfinite(field["shear_scale"]):
+        raise ValueError("Invalid shear scale")
+    grip = conversion["gripper"]
+    if grip["output_coordinate"] != "single_finger_absolute_position" or grip["open_width_m"] != 0.085:
+        raise ValueError("Unsupported gripper convention")
+
+
+def validate_metadata(metadata, *, use_tactile, conversion_sha256):
+    expected = {
+        "deployment_protocol": PROTOCOL,
+        "action_representation": "absolute_xyz_axis_angle_single_finger_m",
+        "action_dim": 7,
+        "dataset_fps": 10,
+        "use_tactile": use_tactile,
+        "conversion_sha256": conversion_sha256,
+    }
+    for key, value in expected.items():
+        if metadata.get(key) != value:
+            raise ValueError(f"Server metadata mismatch: {key}={metadata.get(key)!r}, expected {value!r}")
+
+
+@dataclass(frozen=True)
+class Sample:
+    data: dict
+    monotonic: float
+    oldest_capture: float
+
+
+@dataclass(frozen=True)
+class Chunk:
+    actions: np.ndarray
+    observation_time: float
+
+    def select(self, now, max_steps):
+        age = now - self.observation_time
+        index = math.floor(age * 10 + 1e-7)
+        if index < 0 or index >= min(max_steps, len(self.actions)):
+            raise ValueError(f"Action chunk expired: observation age={age:.3f}s, index={index}")
+        return self.actions[index], index
+
+
+class TargetGuard:
+    """Reject large errors, then limit small target changes in physical units."""
+
+    def __init__(self, limits, initial_state):
+        self.limits = limits
+        self.low = finite(limits["workspace_min"], (3,), "workspace_min")
+        self.high = finite(limits["workspace_max"], (3,), "workspace_max")
+        if np.any(self.low >= self.high):
+            raise ValueError("workspace_min must be less than workspace_max")
+        for key in (
+            "max_target_distance_m",
+            "max_target_rotation_rad",
+            "max_translation_m_s",
+            "max_rotation_rad_s",
+            "max_gripper_width_m_s",
+            "max_tracking_distance_m",
+            "max_tracking_rotation_rad",
+        ):
+            if not np.isfinite(limits[key]) or limits[key] <= 0:
+                raise ValueError(f"{key} must be finite and positive")
+        self.last = finite(initial_state, (7,), "initial state").copy()
+        self.check_workspace(self.last)
+        action_to_http(self.last)
+
+    def check_workspace(self, action):
+        if np.any(action[:3] < self.low) or np.any(action[:3] > self.high):
+            raise ValueError(f"XYZ outside configured workspace: {action[:3].tolist()}")
+
+    def prepare(self, target, measured, dt=0.1):
+        target = finite(target, (7,), "target")
+        measured = finite(measured, (7,), "measured state")
+        action_to_http(target)  # Reject physically invalid gripper predictions before rate limiting.
+        self.check_workspace(target)
+        self.check_workspace(measured)
+        limits = self.limits
+        r_measured = Rotation.from_rotvec(measured[3:6])
+        r_last = Rotation.from_rotvec(self.last[3:6])
+        r_target = Rotation.from_rotvec(target[3:6])
+        if np.linalg.norm(self.last[:3] - measured[:3]) > limits["max_tracking_distance_m"]:
+            raise ValueError("Robot is not tracking the commanded position")
+        if (r_measured.inv() * r_last).magnitude() > limits["max_tracking_rotation_rad"]:
+            raise ValueError("Robot is not tracking the commanded orientation")
+        if np.linalg.norm(target[:3] - measured[:3]) > limits["max_target_distance_m"]:
+            raise ValueError("Predicted position jump exceeds max_target_distance_m")
+        if (r_measured.inv() * r_target).magnitude() > limits["max_target_rotation_rad"]:
+            raise ValueError("Predicted rotation jump exceeds max_target_rotation_rad")
+        dt = min(max(dt, 0.0), 0.1)  # A delayed tick cannot create a large catch-up step.
+        result = target.copy()
+        dp = target[:3] - self.last[:3]
+        dp *= min(1.0, limits["max_translation_m_s"] * dt / max(np.linalg.norm(dp), 1e-12))
+        result[:3] = self.last[:3] + dp
+        dr = (r_last.inv() * r_target).as_rotvec()
+        dr *= min(1.0, limits["max_rotation_rad_s"] * dt / max(np.linalg.norm(dr), 1e-12))
+        result[3:6] = (r_last * Rotation.from_rotvec(dr)).as_rotvec()
+        finger_step = 0.5 * limits["max_gripper_width_m_s"] * dt
+        result[6] = np.clip(target[6], self.last[6] - finger_step, self.last[6] + finger_step)
+        return result
+
+    def commit(self, command):
+        self.last = command.copy()

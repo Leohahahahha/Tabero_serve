@@ -1,0 +1,785 @@
+{
+  "version": 2,
+  "source_raw_root": "/media/enine/Extreme SSD/hj/test",
+  "source_dataset_type": "fr3_zed_d405_rgb_hilserl_raw_sidecar",
+  "output_contract": "tabero_action_only_lerobot_v2.1",
+  "action_target": "7D absolute xyz + axis-angle + gripper; no wrench supervision",
+  "retained_but_unused_first_loader": [
+    "wrist_wrench",
+    "tactile_depth"
+  ],
+  "timing_policy": "compact",
+  "timing_compacted": true,
+  "excluded_source_episode_indices": [
+    29
+  ],
+  "converted_source_episode_indices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28
+  ],
+  "compacted_source_episode_indices": [
+    2,
+    5,
+    6,
+    7,
+    10,
+    14,
+    15,
+    17,
+    19,
+    20,
+    23,
+    26
+  ],
+  "total_missing_candidate_steps": 18,
+  "source_to_output_episode_index": [
+    {
+      "source_episode_index": 0,
+      "output_episode_index": 0
+    },
+    {
+      "source_episode_index": 1,
+      "output_episode_index": 1
+    },
+    {
+      "source_episode_index": 2,
+      "output_episode_index": 2
+    },
+    {
+      "source_episode_index": 3,
+      "output_episode_index": 3
+    },
+    {
+      "source_episode_index": 4,
+      "output_episode_index": 4
+    },
+    {
+      "source_episode_index": 5,
+      "output_episode_index": 5
+    },
+    {
+      "source_episode_index": 6,
+      "output_episode_index": 6
+    },
+    {
+      "source_episode_index": 7,
+      "output_episode_index": 7
+    },
+    {
+      "source_episode_index": 8,
+      "output_episode_index": 8
+    },
+    {
+      "source_episode_index": 9,
+      "output_episode_index": 9
+    },
+    {
+      "source_episode_index": 10,
+      "output_episode_index": 10
+    },
+    {
+      "source_episode_index": 11,
+      "output_episode_index": 11
+    },
+    {
+      "source_episode_index": 12,
+      "output_episode_index": 12
+    },
+    {
+      "source_episode_index": 13,
+      "output_episode_index": 13
+    },
+    {
+      "source_episode_index": 14,
+      "output_episode_index": 14
+    },
+    {
+      "source_episode_index": 15,
+      "output_episode_index": 15
+    },
+    {
+      "source_episode_index": 16,
+      "output_episode_index": 16
+    },
+    {
+      "source_episode_index": 17,
+      "output_episode_index": 17
+    },
+    {
+      "source_episode_index": 18,
+      "output_episode_index": 18
+    },
+    {
+      "source_episode_index": 19,
+      "output_episode_index": 19
+    },
+    {
+      "source_episode_index": 20,
+      "output_episode_index": 20
+    },
+    {
+      "source_episode_index": 21,
+      "output_episode_index": 21
+    },
+    {
+      "source_episode_index": 22,
+      "output_episode_index": 22
+    },
+    {
+      "source_episode_index": 23,
+      "output_episode_index": 23
+    },
+    {
+      "source_episode_index": 24,
+      "output_episode_index": 24
+    },
+    {
+      "source_episode_index": 25,
+      "output_episode_index": 25
+    },
+    {
+      "source_episode_index": 26,
+      "output_episode_index": 26
+    },
+    {
+      "source_episode_index": 27,
+      "output_episode_index": 27
+    },
+    {
+      "source_episode_index": 28,
+      "output_episode_index": 28
+    }
+  ],
+  "timing_reports": [
+    {
+      "frames": 201,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 20.0,
+      "compacted_duration_sec": 20.0,
+      "duration_scale": 1.0,
+      "median_timestamp_step_sec": 0.10000002384185791,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.0,
+      "raw_episode": "data/episodes/episode_000000.parquet",
+      "source_episode_index": 0,
+      "output_episode_index": 0,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 228,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 22.700000762939453,
+      "compacted_duration_sec": 22.7,
+      "duration_scale": 0.9999999663903335,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 9.999999663903337,
+      "raw_episode": "data/episodes/episode_000001.parquet",
+      "source_episode_index": 1,
+      "output_episode_index": 1,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 250,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 25.0,
+      "compacted_duration_sec": 24.9,
+      "duration_scale": 0.996,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.96,
+      "raw_episode": "data/episodes/episode_000002.parquet",
+      "source_episode_index": 2,
+      "output_episode_index": 2,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 239,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 23.799999237060547,
+      "compacted_duration_sec": 23.8,
+      "duration_scale": 1.0000000320562805,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000320562807,
+      "raw_episode": "data/episodes/episode_000003.parquet",
+      "source_episode_index": 3,
+      "output_episode_index": 3,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 222,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 22.100000381469727,
+      "compacted_duration_sec": 22.1,
+      "duration_scale": 0.9999999827389268,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 9.999999827389267,
+      "raw_episode": "data/episodes/episode_000004.parquet",
+      "source_episode_index": 4,
+      "output_episode_index": 4,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 189,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 18.899999618530273,
+      "compacted_duration_sec": 18.8,
+      "duration_scale": 0.9947090147857871,
+      "median_timestamp_step_sec": 0.10000002384185791,
+      "max_timestamp_step_sec": 0.20000004768371582,
+      "effective_retained_hz": 9.947090147857871,
+      "raw_episode": "data/episodes/episode_000005.parquet",
+      "source_episode_index": 5,
+      "output_episode_index": 5,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 170,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 17.0,
+      "compacted_duration_sec": 16.9,
+      "duration_scale": 0.9941176470588234,
+      "median_timestamp_step_sec": 0.10000000149011612,
+      "max_timestamp_step_sec": 0.19999980926513672,
+      "effective_retained_hz": 9.941176470588236,
+      "raw_episode": "data/episodes/episode_000006.parquet",
+      "source_episode_index": 6,
+      "output_episode_index": 6,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 218,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 21.799999237060547,
+      "compacted_duration_sec": 21.7,
+      "duration_scale": 0.9954128788733834,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.954128788733835,
+      "raw_episode": "data/episodes/episode_000007.parquet",
+      "source_episode_index": 7,
+      "output_episode_index": 7,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 229,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 22.799999237060547,
+      "compacted_duration_sec": 22.8,
+      "duration_scale": 1.0000000334622579,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000334622579,
+      "raw_episode": "data/episodes/episode_000008.parquet",
+      "source_episode_index": 8,
+      "output_episode_index": 8,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 240,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 23.899999618530273,
+      "compacted_duration_sec": 23.9,
+      "duration_scale": 1.0000000159610767,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000159610767,
+      "raw_episode": "data/episodes/episode_000009.parquet",
+      "source_episode_index": 9,
+      "output_episode_index": 9,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 247,
+      "strict_ok": false,
+      "missing_candidate_steps": 2,
+      "source_duration_sec": 24.799999237060547,
+      "compacted_duration_sec": 24.6,
+      "duration_scale": 0.9919355143865621,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.919355143865621,
+      "raw_episode": "data/episodes/episode_000010.parquet",
+      "source_episode_index": 10,
+      "output_episode_index": 10,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 200,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 19.899999618530273,
+      "compacted_duration_sec": 19.9,
+      "duration_scale": 1.0000000191693332,
+      "median_timestamp_step_sec": 0.10000002384185791,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000191693333,
+      "raw_episode": "data/episodes/episode_000011.parquet",
+      "source_episode_index": 11,
+      "output_episode_index": 11,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 224,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 22.299999237060547,
+      "compacted_duration_sec": 22.3,
+      "duration_scale": 1.0000000342125328,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000342125327,
+      "raw_episode": "data/episodes/episode_000012.parquet",
+      "source_episode_index": 12,
+      "output_episode_index": 12,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 222,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 22.100000381469727,
+      "compacted_duration_sec": 22.1,
+      "duration_scale": 0.9999999827389268,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 9.999999827389267,
+      "raw_episode": "data/episodes/episode_000013.parquet",
+      "source_episode_index": 13,
+      "output_episode_index": 13,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 222,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 22.200000762939453,
+      "compacted_duration_sec": 22.1,
+      "duration_scale": 0.9954954612836594,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.954954612836593,
+      "raw_episode": "data/episodes/episode_000014.parquet",
+      "source_episode_index": 14,
+      "output_episode_index": 14,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 221,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 22.100000381469727,
+      "compacted_duration_sec": 22.0,
+      "duration_scale": 0.995475095939203,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.954750959392031,
+      "raw_episode": "data/episodes/episode_000015.parquet",
+      "source_episode_index": 15,
+      "output_episode_index": 15,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 259,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 25.799999237060547,
+      "compacted_duration_sec": 25.8,
+      "duration_scale": 1.0000000295712976,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000295712976,
+      "raw_episode": "data/episodes/episode_000016.parquet",
+      "source_episode_index": 16,
+      "output_episode_index": 16,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 272,
+      "strict_ok": false,
+      "missing_candidate_steps": 3,
+      "source_duration_sec": 27.399999618530273,
+      "compacted_duration_sec": 27.1,
+      "duration_scale": 0.9890511086603305,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.890511086603306,
+      "raw_episode": "data/episodes/episode_000017.parquet",
+      "source_episode_index": 17,
+      "output_episode_index": 17,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 236,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 23.5,
+      "compacted_duration_sec": 23.5,
+      "duration_scale": 1.0,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.0,
+      "raw_episode": "data/episodes/episode_000018.parquet",
+      "source_episode_index": 18,
+      "output_episode_index": 18,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 300,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 30.0,
+      "compacted_duration_sec": 29.9,
+      "duration_scale": 0.9966666666666666,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.966666666666667,
+      "raw_episode": "data/episodes/episode_000019.parquet",
+      "source_episode_index": 19,
+      "output_episode_index": 19,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 234,
+      "strict_ok": false,
+      "missing_candidate_steps": 1,
+      "source_duration_sec": 23.399999618530273,
+      "compacted_duration_sec": 23.3,
+      "duration_scale": 0.9957265119589539,
+      "median_timestamp_step_sec": 0.10000014305114746,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.957265119589538,
+      "raw_episode": "data/episodes/episode_000020.parquet",
+      "source_episode_index": 20,
+      "output_episode_index": 20,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 198,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 19.700000762939453,
+      "compacted_duration_sec": 19.7,
+      "duration_scale": 0.9999999612721104,
+      "median_timestamp_step_sec": 0.10000002384185791,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 9.999999612721105,
+      "raw_episode": "data/episodes/episode_000021.parquet",
+      "source_episode_index": 21,
+      "output_episode_index": 21,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 252,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 25.100000381469727,
+      "compacted_duration_sec": 25.1,
+      "duration_scale": 0.9999999848020033,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 9.999999848020032,
+      "raw_episode": "data/episodes/episode_000022.parquet",
+      "source_episode_index": 22,
+      "output_episode_index": 22,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 260,
+      "strict_ok": false,
+      "missing_candidate_steps": 3,
+      "source_duration_sec": 26.200000762939453,
+      "compacted_duration_sec": 25.9,
+      "duration_scale": 0.9885495895342181,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.19999980926513672,
+      "effective_retained_hz": 9.885495895342181,
+      "raw_episode": "data/episodes/episode_000023.parquet",
+      "source_episode_index": 23,
+      "output_episode_index": 23,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 249,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 24.799999237060547,
+      "compacted_duration_sec": 24.8,
+      "duration_scale": 1.0000000307636887,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000307636885,
+      "raw_episode": "data/episodes/episode_000024.parquet",
+      "source_episode_index": 24,
+      "output_episode_index": 24,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 268,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 26.700000762939453,
+      "compacted_duration_sec": 26.7,
+      "duration_scale": 0.9999999714254895,
+      "median_timestamp_step_sec": 0.10000038146972656,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 9.999999714254894,
+      "raw_episode": "data/episodes/episode_000025.parquet",
+      "source_episode_index": 25,
+      "output_episode_index": 25,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 208,
+      "strict_ok": false,
+      "missing_candidate_steps": 2,
+      "source_duration_sec": 20.899999618530273,
+      "compacted_duration_sec": 20.7,
+      "duration_scale": 0.9904306400870481,
+      "median_timestamp_step_sec": 0.10000002384185791,
+      "max_timestamp_step_sec": 0.20000076293945312,
+      "effective_retained_hz": 9.904306400870482,
+      "raw_episode": "data/episodes/episode_000026.parquet",
+      "source_episode_index": 26,
+      "output_episode_index": 26,
+      "compacted": true,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 192,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 19.100000381469727,
+      "compacted_duration_sec": 19.1,
+      "duration_scale": 0.9999999800277635,
+      "median_timestamp_step_sec": 0.10000002384185791,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 9.999999800277633,
+      "raw_episode": "data/episodes/episode_000027.parquet",
+      "source_episode_index": 27,
+      "output_episode_index": 27,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    },
+    {
+      "frames": 205,
+      "strict_ok": true,
+      "missing_candidate_steps": 0,
+      "source_duration_sec": 20.399999618530273,
+      "compacted_duration_sec": 20.4,
+      "duration_scale": 1.0000000186994966,
+      "median_timestamp_step_sec": 0.10000002384185791,
+      "max_timestamp_step_sec": 0.10000038146972656,
+      "effective_retained_hz": 10.000000186994967,
+      "raw_episode": "data/episodes/episode_000028.parquet",
+      "source_episode_index": 28,
+      "output_episode_index": 28,
+      "compacted": false,
+      "left_tactile_unique_ratio": 1.0,
+      "right_tactile_unique_ratio": 1.0
+    }
+  ],
+  "source_episode_metadata": {
+    "path": "meta/episodes.jsonl",
+    "rows": 30,
+    "duplicate_episode_indices": []
+  },
+  "source_tactile_schema_versions": [
+    3
+  ],
+  "front_image_crop": {
+    "enabled": true,
+    "coordinate_convention": "xyxy; x1/y1 exclusive",
+    "roi_xyxy": [
+      350,
+      0,
+      740,
+      520
+    ],
+    "source_shape": [
+      540,
+      960,
+      3
+    ],
+    "output_shape": [
+      520,
+      390,
+      3
+    ]
+  },
+  "marker_field": {
+    "shape": [
+      9,
+      198,
+      2
+    ],
+    "history_length": 8,
+    "side_order": [
+      "left",
+      "right"
+    ],
+    "grid_rows": 9,
+    "grid_cols": 11,
+    "grid_y_indices": [
+      0,
+      30,
+      60,
+      90,
+      120,
+      149,
+      179,
+      209,
+      239
+    ],
+    "grid_x_indices": [
+      0,
+      32,
+      64,
+      96,
+      128,
+      160,
+      191,
+      223,
+      255,
+      287,
+      319
+    ],
+    "reference": "sampled sensor pixel coordinates (x,y)",
+    "current": "reference + shear_scale * sampled (shear_x,shear_y)",
+    "shear_scale": 1.0,
+    "early_history_padding": "repeat episode frame 0"
+  },
+  "depth_field": {
+    "shape": [
+      2,
+      240,
+      320
+    ],
+    "side_order": [
+      "left",
+      "right"
+    ],
+    "source_channel": "decoded DM-Tac depth float32"
+  },
+  "wrench_field": {
+    "shape": [
+      6
+    ],
+    "order": [
+      "force_x",
+      "force_y",
+      "force_z",
+      "torque_x",
+      "torque_y",
+      "torque_z"
+    ],
+    "source": "synchronized robot.force + robot.torque"
+  },
+  "gripper": {
+    "state_source_unit": "meter",
+    "state_source_coordinate": "finger",
+    "action_source_unit": "meter",
+    "action_source_coordinate": "total_width (legacy) or explicit finger field",
+    "output_unit": "meter",
+    "output_coordinate": "single_finger_absolute_position",
+    "open_width_m": 0.085,
+    "max_finger_position_m": 0.0425
+  },
+  "orphan_tactile_rows": {
+    "left": 69,
+    "right": 69
+  }
+}

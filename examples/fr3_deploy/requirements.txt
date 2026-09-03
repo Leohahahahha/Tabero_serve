@@ -1,0 +1,7 @@
+# Use the robot host's ROS-compatible Python (3.10+); no JAX/PyTorch on this host.
+numpy>=1.24,<2
+scipy>=1.10
+requests>=2.31
+opencv-python>=4.8
+websockets>=14,<16
+msgpack>=1.0.5

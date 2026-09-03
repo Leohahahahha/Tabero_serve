@@ -19,6 +19,7 @@ import openpi.models.pi0_fast as pi0_fast
 import openpi.models.tokenizer as _tokenizer
 import openpi.policies.libero_policy as libero_policy
 import openpi.shared.download as _download
+import openpi.shared.nnx_utils as nnx_utils
 import openpi.shared.normalize as _normalize
 from openpi.shared.tactile_type import TactileType
 import openpi.training.misc.roboarena_config as roboarena_config
@@ -67,6 +68,12 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Explicit local LeRobot root. Never infer this from a Hugging Face repo id.
+    root: str | None = None
+    episodes: tuple[int, ...] | None = None
+    validation_episodes: tuple[int, ...] = ()
+    video_backend: str | None = None
+    columns: tuple[str, ...] | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -99,6 +106,16 @@ class DataConfig:
 
     rlds_data_dir: str | None = None
     filter_dict_path: str | None = None
+
+    def __post_init__(self):
+        for ids in (self.episodes, self.validation_episodes):
+            if ids is not None and (len(set(ids)) != len(ids) or any(i < 0 for i in ids)):
+                raise ValueError("Episode selectors must be unique non-negative integers")
+        if self.episodes is not None and not self.episodes:
+            raise ValueError("Training episode selector cannot be empty")
+        if self.validation_episodes:
+            if self.episodes is None or set(self.episodes) & set(self.validation_episodes):
+                raise ValueError("Validation requires explicit, disjoint training episodes")
 
 
 class GroupFactory(Protocol):
@@ -407,12 +424,15 @@ class TaberoTacFieldDataConfig(DataConfigFactory):
     """
 
     extra_delta_transform: bool = True
+    action_only: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # The dedicated action-only adapter uses the real FR3 contract, not a simulation schema.
+        input_type = libero_policy.TaberoActionOnlyInputs if self.action_only else libero_policy.TaberoTacFieldInputs
         data_transforms = _transforms.Group(
-            inputs=[libero_policy.TaberoTacFieldInputs(model_type=model_config.model_type)],
-            outputs=[libero_policy.LiberoForceOutputs()],
+            inputs=[input_type(model_type=model_config.model_type)],
+            outputs=[libero_policy.TaberoActionOnlyOutputs() if self.action_only else libero_policy.LiberoForceOutputs()],
         )
 
         if self.extra_delta_transform:
@@ -555,18 +575,20 @@ class TaberoNoTactNoForceDataConfig(DataConfigFactory):
     """
 
     extra_delta_transform: bool = True
+    action_only: bool = False
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        input_type = libero_policy.TaberoNoTactActionOnlyInputs if self.action_only else libero_policy.TaberoNoTactInputs
         data_transforms = _transforms.Group(
             inputs=[
                 # Image stream mapping and masking behavior.
                 # Tactile/force stream configuration and loss behavior.
-                libero_policy.TaberoNoTactInputs(model_type=model_config.model_type),
+                input_type(model_type=model_config.model_type),
                 # Tactile/force stream configuration and loss behavior.
                 _transforms.SliceActions(7),
             ],
-            outputs=[libero_policy.LiberoOutputs()],
+            outputs=[libero_policy.TaberoActionOnlyOutputs() if self.action_only else libero_policy.LiberoOutputs()],
         )
 
         if self.extra_delta_transform:
@@ -578,11 +600,13 @@ class TaberoNoTactNoForceDataConfig(DataConfigFactory):
 
         model_transforms = ModelTransformFactory()(model_config)
 
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-        )
+        base = self.create_base_config(assets_dirs, model_config)
+        # Reuse identical train-only state/action statistics, without tactile assets in new checkpoints.
+        if self.action_only and base.norm_stats is not None:
+            base = dataclasses.replace(
+                base, norm_stats={k: v for k, v in base.norm_stats.items() if k in ("state", "actions")}
+            )
+        return dataclasses.replace(base, data_transforms=data_transforms, model_transforms=model_transforms)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -726,6 +750,9 @@ class TrainConfig:
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
+    # Disabled for existing configs. Bounded validation samples span the whole held-out dataset.
+    eval_interval: int = 0
+    eval_num_batches: int = 12
     # How often (in steps) to save checkpoints.
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
@@ -1510,6 +1537,146 @@ _CONFIGS = [
     #
     *roboarena_config.get_roboarena_configs(),
 ]
+
+# Small local action-only continuation; original published configs remain unchanged.
+_tabero_pretrained = next(c for c in _CONFIGS if c.name == "pi0_lora_tacfield_tabero")
+_CONFIGS.append(dataclasses.replace(
+    _tabero_pretrained,
+    name="pi0_lora_tacfield_local_smoke",
+    model=dataclasses.replace(
+        _tabero_pretrained.model,
+        supervised_action_dim=7,
+        tactile_loss_weight=0.0,
+        padding_loss_weight=0.0,
+    ),
+    data=TaberoTacFieldDataConfig(
+        repo_id="local/tabero_lerobot_compact_v1",
+        base_config=DataConfig(
+            root="/data/yanghaojun/datasets/tabero_lerobot_compact_v1",
+            # Fixed episode split, interspersed through acquisition order, not random frames.
+            episodes=tuple(i for i in range(29) if i not in (4, 14, 24)),
+            validation_episodes=(4, 14, 24),
+            video_backend="pyav",
+            columns=("state", "actions", "tactile_marker_motion", "timestamp", "frame_index",
+                     "episode_index", "index", "task_index"),
+            prompt_from_task=True,
+        ),
+        action_only=True,
+        extra_delta_transform=True,
+    ),
+    weight_loader=weight_loaders.CheckpointWeightLoader(
+        "/data/yanghaojun/checkpoints/tabero-pretrained/checkpoints/"
+        "pi0_lora_tacfield_tabero/pi0_lora_tacfield_tabero/49999/params",
+        missing_regex="(?!)",  # No random fallback, including missing LoRA/tactile leaves.
+        strict=True,
+    ),
+    freeze_filter=nnx.Not(nnx_utils.PathRegex(".*lora.*")),
+    batch_size=2,
+    num_workers=2,
+    num_train_steps=100,
+    log_interval=10,
+    eval_interval=50,
+    eval_num_batches=12,
+    save_interval=100,
+    keep_period=None,
+    wandb_enabled=False,
+    policy_metadata={
+        "robot": "franka_fr3",
+        "deployment_target": "real_robot",
+        "action_representation": "absolute_xyz_axis_angle_single_finger_m",
+        "action_dim": 7,
+        "dataset_fps": 10,
+        "tactile_input": "rolling_9x198x2_marker_coordinates_left_then_right",
+        "predicts_wrench": False,
+        "robot_safety_validation_required": True,
+    },
+    checkpoint_base_dir="/data/yanghaojun/outputs/checkpoints",
+    assets_base_dir="/data/yanghaojun/outputs/assets",
+    lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=10, peak_lr=1e-5, decay_steps=100, decay_lr=1e-6),
+))
+
+# Sensor-adaptation variant. Only new tactile adapters may be absent from Tabero;
+# pretrained tactile kernels/biases and backbone LoRA must still be restored strictly.
+_tabero_local_smoke = next(c for c in _CONFIGS if c.name == "pi0_lora_tacfield_local_smoke")
+_CONFIGS.append(dataclasses.replace(
+    _tabero_local_smoke,
+    name="pi0_lora_tacfield_local_tactile_lora_smoke",
+    model=dataclasses.replace(
+        _tabero_local_smoke.model,
+        tactile_prefix_lora_rank=16,
+        tactile_prefix_lora_alpha=16.0,
+    ),
+    weight_loader=dataclasses.replace(
+        _tabero_local_smoke.weight_loader,
+        strict_allow_missing_regex=(
+            r"tactile_prefix_encoder/(blocks/block_[01]/kernels/kernel_[012]|"
+            r"blocks/block_0/residual_proj|out_proj)/lora_[ab]"
+        ),
+    ),
+    policy_metadata={
+        **_tabero_local_smoke.policy_metadata,
+        "tactile_adaptation": "tcn_lora",
+        "tactile_lora_rank": 16,
+        "tactile_lora_alpha": 16.0,
+    },
+))
+
+# Matched local retraining profiles: start from published Tabero, NOT local smoke99/final2999.
+# Only reuse checkpoint2999's train-only normalization assets; no learned weights from that run.
+_tabero_comparison_assets = AssetsConfig(assets_dir=(
+    "/data/yanghaojun/outputs/checkpoints/pi0_lora_tacfield_local_tactile_lora_smoke/"
+    "real_fr3_recovery_20260903_112020/2999/assets"
+))
+_tabero_touch_comparison = dataclasses.replace(
+    next(c for c in _CONFIGS if c.name == "pi0_lora_tacfield_local_tactile_lora_smoke"),
+    name="pi0_lora_tabero_rgb_state_touch",
+    data=dataclasses.replace(_tabero_local_smoke.data, assets=_tabero_comparison_assets),
+    batch_size=4,
+    num_workers=4,
+    num_train_steps=3000,
+    eval_interval=250,
+    eval_num_batches=173,
+    save_interval=100,
+    keep_period=500,
+    lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=100, peak_lr=1e-5, decay_steps=3000, decay_lr=1e-6),
+)
+_CONFIGS.append(_tabero_touch_comparison)
+_CONFIGS.append(dataclasses.replace(
+    _tabero_touch_comparison,
+    name="pi0_lora_tabero_rgb_state",
+    model=dataclasses.replace(
+        _tabero_touch_comparison.model,
+        tactile_type=TactileType.NO,
+        tactile_streams=(),
+        tactile_dim_in=0,
+        tactile_prefix_dim_in=0,
+        tactile_prefix_history=None,
+        tactile_prefix_lora_rank=0,
+    ),
+    data=TaberoNoTactNoForceDataConfig(
+        repo_id=_tabero_local_smoke.data.repo_id,
+        assets=_tabero_comparison_assets,
+        base_config=dataclasses.replace(
+            _tabero_local_smoke.data.base_config,
+            columns=tuple(k for k in _tabero_local_smoke.data.base_config.columns if k != "tactile_marker_motion"),
+        ),
+        action_only=True,
+        extra_delta_transform=True,
+    ),
+    weight_loader=dataclasses.replace(
+        _tabero_local_smoke.weight_loader,
+        strict_allow_extra_regex=(
+            r"tactile_prefix_encoder/(blocks/block_[01]/kernels/kernel_[012]|"
+            r"blocks/block_0/residual_proj|out_proj)/(kernel|bias)"
+        ),
+    ),
+    policy_metadata={
+        **_tabero_local_smoke.policy_metadata,
+        "tactile_input": "none",
+        "tactile_adaptation": "none",
+        "tactile_lora_rank": 0,
+    },
+))
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

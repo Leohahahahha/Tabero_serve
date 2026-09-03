@@ -18,6 +18,11 @@ from openpi.shared.tactile_type import TactileType
 logger = logging.getLogger("openpi")
 
 
+def action_only_flow_loss(prediction, target, supervised_dim):
+    """Flow-matching loss over labeled actions only; never supervise padded/force slots."""
+    return jnp.mean(jnp.square(prediction[..., :supervised_dim] - target[..., :supervised_dim]), axis=-1)
+
+
 def make_attn_mask(input_mask, mask_ar):
     """Adapted from big_vision.
 
@@ -80,6 +85,7 @@ class Pi0(_model.BaseModel):
         # Tactile/force stream configuration and loss behavior.
         # Padding dimensions and their loss weighting.
         self.effective_action_dim = config.effective_action_dim
+        self.supervised_action_dim = config.supervised_action_dim
         # Tactile/force stream configuration and loss behavior.
         self.tactile_loss_weight = config.tactile_loss_weight
         # Action/force dimensions and loss handling.
@@ -154,6 +160,8 @@ class Pi0(_model.BaseModel):
                     diff_from_reference=config.tactile_prefix_diff_from_reference,
                     expert_width=prefix_width,
                     rngs=rngs,
+                    lora_rank=config.tactile_prefix_lora_rank,
+                    lora_alpha=config.tactile_prefix_lora_alpha,
                 )
             # Tactile/force stream configuration and loss behavior.
             if use_suffix and config.tactile_dim_in is not None and config.tactile_dim_in > 0:
@@ -384,6 +392,12 @@ class Pi0(_model.BaseModel):
             [prefix_tokens, suffix_tokens], mask=attn_mask, positions=positions, adarms_cond=[None, adarms_cond]
         )
         v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+        if self.supervised_action_dim is not None:
+            loss = action_only_flow_loss(v_t, u_t, self.supervised_action_dim)
+            if return_components:
+                return loss, {"action_loss": jnp.mean(loss), "tactile_loss": jnp.zeros(())}
+            return loss
 
         if self.tactile_type is TactileType.EXPERT_HIS_C_FUT:
             # Tactile/force stream configuration and loss behavior.

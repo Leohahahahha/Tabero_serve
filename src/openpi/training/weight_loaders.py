@@ -49,12 +49,56 @@ class CheckpointWeightLoader(WeightLoader):
     # Regex specifying parameters that are missing from the checkpoint but exist in the current model
     # and should be filled from the current model parameters. By default, only LoRA weights are filled, preserving previous behavior.
     missing_regex: str = ".*lora.*"
+    strict: bool = False
+    # Opt-in exception for genuinely new leaves only; existing/extra shapes remain strict.
+    # Kept separate from missing_regex so strict=True never implicitly permits missing LoRA.
+    strict_allow_missing_regex: str | None = None
+    # Explicit removed-module exception; shared and unexpected leaves stay strict.
+    strict_allow_extra_regex: str | None = None
+
+    def __post_init__(self):
+        if self.strict_allow_missing_regex is not None and not self.strict:
+            raise ValueError("strict_allow_missing_regex requires strict=True")
+        if self.strict_allow_extra_regex is not None and not self.strict:
+            raise ValueError("strict_allow_extra_regex requires strict=True")
 
     def load(self, params: at.Params) -> at.Params:
         # We are loading np.ndarray and relying on the training code to properly convert and shard the params.
         loaded_params = _model.restore_params(download.maybe_download(self.params_path), restore_type=np.ndarray)
+        if self.strict:
+            expected = flax.traverse_util.flatten_dict(params, sep="/")
+            actual = flax.traverse_util.flatten_dict(loaded_params, sep="/")
+            missing, extra = set(expected) - set(actual), set(actual) - set(expected)
+            allowed_extra = {
+                k for k in extra
+                if self.strict_allow_extra_regex is not None and re.fullmatch(self.strict_allow_extra_regex, k)
+            }
+            extra -= allowed_extra
+            allowed_missing = {
+                k for k in missing
+                if self.strict_allow_missing_regex is not None and re.fullmatch(self.strict_allow_missing_regex, k)
+            }
+            if allowed_missing and any(
+                re.fullmatch(self.strict_allow_missing_regex, k) for k in actual
+            ):
+                raise ValueError("Strict checkpoint mismatch: partially present new adapters; refusing to reset them")
+            missing -= allowed_missing
+            mismatched = {k for k in expected.keys() & actual.keys() if expected[k].shape != actual[k].shape}
+            if missing or extra or mismatched:
+                raise ValueError(
+                    f"Strict checkpoint mismatch: missing={sorted(missing)}, extra={sorted(extra)}, "
+                    f"shape_mismatch={sorted(mismatched)}"
+                )
+            logger.info("Strictly restored %d leaves (%d LoRA) from %s", len(actual) - len(allowed_extra),
+                        sum("lora" in k for k in actual if k not in allowed_extra), self.params_path)
+            if allowed_extra:
+                logger.info("Discard %d explicitly removed-module leaves: %s", len(allowed_extra), sorted(allowed_extra))
+            if allowed_missing:
+                logger.info("Initialize %d explicitly allowed new adapter leaves: %s",
+                            len(allowed_missing), sorted(allowed_missing))
         # Add all missing weights that match missing_regex, such as LoRA weights or weights from newly added modules.
-        return _merge_params(loaded_params, params, missing_regex=self.missing_regex)
+        missing_regex = (self.strict_allow_missing_regex or "(?!)") if self.strict else self.missing_regex
+        return _merge_params(loaded_params, params, missing_regex=missing_regex)
 
 
 @dataclasses.dataclass(frozen=True)

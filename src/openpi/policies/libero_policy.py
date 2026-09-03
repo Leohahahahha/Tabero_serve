@@ -204,6 +204,44 @@ class TaberoTacFieldInputs(transforms.DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TaberoActionOnlyInputs(TaberoTacFieldInputs):
+    """Real FR3 dataset contract: two RGB streams, absolute 7D pose, rolling marker history."""
+
+    def __call__(self, data: dict) -> dict:
+        state = np.asarray(data["state"])
+        motion = np.asarray(data["tactile_marker_motion"])
+        if state.shape != (7,) or motion.shape != (9, 198, 2):
+            raise ValueError(f"Expected state [7] and marker history [9,198,2], got {state.shape}, {motion.shape}")
+        if not np.isfinite(state).all() or not np.isfinite(motion).all():
+            raise ValueError("State and marker history must be finite")
+        if not -1e-6 <= state[6] <= 0.042501:
+            raise ValueError("State gripper must be single-finger position in meters, within [0, 0.0425]")
+        if "actions" in data:
+            actions = np.asarray(data["actions"])
+            if actions.ndim != 2 or actions.shape[-1] != 7 or not np.isfinite(actions).all():
+                raise ValueError("Action-only training targets must be finite [horizon,7] absolute poses")
+        return super().__call__(data)
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoActionOnlyOutputs(transforms.DataTransformFn):
+    """Return 7D absolute targets after unnormalization and inverse delta transform.
+
+    This is NOT a robot controller: workspace, speed, rotation and gripper limits must
+    still be checked by the real-robot bridge before executing any target.
+    """
+
+    def __call__(self, data: dict) -> dict:
+        actions = np.asarray(data["actions"])
+        if actions.ndim != 2 or actions.shape[-1] < 7:
+            raise ValueError("Expected unbatched action chunk [horizon,>=7]")
+        actions = actions[:, :7].astype(np.float32)
+        if not np.isfinite(actions).all():
+            raise ValueError("Refusing non-finite action outputs")
+        return {"actions": actions}
+
+
+@dataclasses.dataclass(frozen=True)
 class TaberoTacForceInputs(transforms.DataTransformFn):
     """
     Tactile/force stream configuration and loss behavior.
@@ -405,6 +443,23 @@ class TaberoNoTactInputs(transforms.DataTransformFn):
             inputs["prompt"] = data["prompt"]
 
         return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoNoTactActionOnlyInputs(TaberoNoTactInputs):
+    """Real-FR3 RGB+state baseline: never reads or forwards tactile/force fields."""
+
+    def __call__(self, data: dict) -> dict:
+        state = np.asarray(data["state"])
+        if state.shape != (7,) or not np.isfinite(state).all():
+            raise ValueError("Expected finite real-FR3 state [7]")
+        if not -1e-6 <= state[6] <= 0.042501:
+            raise ValueError("State gripper must be single-finger meters within [0, 0.0425]")
+        if "actions" in data:
+            actions = np.asarray(data["actions"])
+            if actions.ndim != 2 or actions.shape[-1] != 7 or not np.isfinite(actions).all():
+                raise ValueError("Action-only training targets must be finite [horizon,7] absolute poses")
+        return super().__call__(data)
 
 
 @dataclasses.dataclass(frozen=True)

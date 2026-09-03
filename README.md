@@ -10,6 +10,9 @@ The core feature of this repository is **tactile/force modality fusion**. On top
 
 ## Requirements
 
+FR3 deployment with ZED, D405 and DM-Tac W: see the [Chinese deployment guide](docs/tabero_fr3_deployment.md)
+for the model server, ROS2 client, observation contracts and manual shadow/execution commands.
+
 Running the models in this repository requires an NVIDIA GPU. The estimated requirements are listed below (single-GPU estimates; multi-GPU model parallelism can also be configured through `fsdp_devices` to reduce per-GPU memory usage):
 
 | Mode | VRAM Requirement | Recommended GPU |
@@ -63,6 +66,15 @@ This repository introduces two tactile/force information fusion paths on top of 
 For details, see the [tactile integration documentation](docs/tactile_integration.md).
 
 ## Quick Start: Fine-Tune π₀ on Tabero Data
+
+For the local FR3 **real-robot, marker-motion input / action-only LoRA continuation**
+configuration, see [the code-only preparation guide](docs/tabero_real_robot_smoke.md).
+It uses an existing Tabero checkpoint, a 26/3 episode split and only 7D action supervision.
+The guide includes a frozen-tactile baseline and an opt-in **backbone + tactile TCN LoRA**
+variant for DM-Tac sensor adaptation; training and model evaluation remain user-operated.
+For a separately trained RGB+state-only baseline and paired offline comparison, see
+[the no-tactile retraining guide](docs/tabero_rgb_state_baseline.md).
+The original example below starts from the base model and is not that configuration.
 
 Using `pi0_lora_tacfield_tabero` as an example (two image streams + tactile force field + 13D joint action/force prediction), training has three steps:
 
