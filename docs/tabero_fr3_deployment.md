@@ -10,7 +10,7 @@
 |---|---|
 | 输入 `state` | `[x,y,z,rx,ry,rz,finger_m]`，位置为米，姿态为旋转向量（轴角，弧度） |
 | 输入图像 | HWC、RGB、uint8；前视原图 540×960，裁剪 `[350,0,740,520]`；腕部 480×640 |
-| 输入触觉 | `tactile_marker_motion`，float32 `[9,198,2]` |
+| 输入触觉 | 必需的 `tactile_marker_motion`，float32 `[9,198,2]`；参考网格 + 8帧历史，每帧左99点后右99点 |
 | `policy.infer()["actions"]` | `[50,7]`，反归一化且恢复绝对坐标后的目标 |
 | `/pose` | `{"arr":[x,y,z,qx,qy,qz,qw]}` |
 | `/move_gripper` | `{"gripper_width": 2*finger_m}`，两指总开口宽度 |
@@ -118,11 +118,18 @@ python3 -m venv --system-site-packages .venv-fr3
 
 - `robot_url`：现场原 `franka_server` 地址；默认沿用附件 `http://192.168.1.10:5000`。
 - `policy_url`：模型主机地址，例如 `ws://192.168.1.20:8000`。
-- `front_topic`、`wrist_topic`：默认沿用附件；压缩 RGB 话题需修改话题并设置相应 `*_compressed: true`。
+- `front_topic`、`wrist_topic`：默认使用跨机ZED compressed话题和D405 raw RGB话题。
 - 触觉默认 `/dmtac/left/packed_frame` 和 `/dmtac/right/packed_frame`，模式为 `shear_depth`。
 - `limits.workspace_min/max`：默认复制附件中的范围，**应按实际夹具和操作空间设置**，不是现场碰撞模型。
 - `prompt`：默认保留当前训练集的原始 task 文本。当前数据使用泛化的采集描述，并非精确任务指令；
   不要假设改成另一条自然语言任务就能获得该任务能力。
+
+QoS按采集链路分别设置：ZED/D405为RELIABLE/depth1，DM-Tac packed保持
+BEST_EFFORT/depth1，使能心跳为RELIABLE/depth1。DM-Tac packed发布端本身是
+BEST_EFFORT；只把订阅端改成RELIABLE会造成QoS不兼容。
+
+`robot_url`和`policy_url`可通过启动参数`--robot-url`、`--policy-url`覆盖，避免把
+某台现场主机的地址提交到Git。最终生效配置会写入本次JSONL日志。
 
 schema 3 的每侧数据为 `8UC1`、height=1、width=step=921600；前 614400 字节是
 little-endian float32 `[240,320,2]` shear，其后为 depth。客户端通过附件布局函数解码，
@@ -139,6 +146,10 @@ little-endian float32 `[240,320,2]` shear，其后为 depth。客户端通过附
 默认观测最老采集时间不得超过 250 ms，多模态时间差不超过 100 ms。
 图像中重复的 header.stamp 不会刷新时效；缺失/停滞的时间戳会被拒绝。
 
+触觉模型不会在marker缺失时自动补零。客户端采样后、WebSocket发送前和模型adapter入口都会
+验证`float32 [9,198,2]`及有限值；服务端还会通过metadata与conversion文件核对shape、dtype、
+参考帧+8帧历史布局和left-then-right顺序。任一不一致都会停止，不会继续推理。
+
 ## 6. 先运行 shadow
 
 模型服务就绪后，在机器人主机仓库目录运行：
@@ -147,8 +158,19 @@ little-endian float32 `[240,320,2]` shear，其后为 depth。客户端通过附
 .venv-fr3/bin/python examples/fr3_deploy/run.py --seconds 30 --log deployment_logs/shadow_001.jsonl
 ```
 
+若现场机器人HTTP地址为`172.31.179.19:5000`、模型主机为`192.168.1.20`，可直接覆盖：
+
+```bash
+.venv-fr3/bin/python examples/fr3_deploy/run.py \
+  --robot-url http://172.31.179.19:5000 \
+  --policy-url ws://192.168.1.20:8000 \
+  --seconds 30 \
+  --log deployment_logs/shadow_001.jsonl
+```
+
 该模式会读取真实状态、双相机及双触觉，首次调用用于模型编译并丢弃输出。
 正式预测逐步写入 JSONL，包括输入状态、预测、选取的 chunk 索引、限速目标和 HTTP payload。
+触觉模型还会记录marker的shape、dtype及左右当前帧相对参考网格的平均/最大位移，便于确认真机触觉正在变化。
 位置/姿态跳变、夹爪越界等预测会记录 `ok: false` 和原因；shadow 继续观察，不发送控制请求。
 观测断流、模型通信错误和推理过期仍会终止程序。
 

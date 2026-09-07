@@ -48,6 +48,10 @@ def test_server_uses_moved_checkpoint_assets_and_strict_restore(monkeypatch, tmp
     assert metadata["use_tactile"] is use_tactile
     assert metadata["action_horizon"] == 50
     assert metadata["conversion_sha256"] == hashlib.sha256(conversion.read_bytes()).hexdigest()
+    if use_tactile:
+        assert metadata["tactile_marker_shape"] == [9, 198, 2]
+        assert metadata["tactile_marker_dtype"] == "float32"
+        assert metadata["tactile_marker_layout"] == "reference_then_8_history_frames_left_then_right"
 
 
 def test_wrong_simulation_config_rejected_before_loading(monkeypatch, tmp_path):

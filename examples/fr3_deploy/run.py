@@ -10,9 +10,11 @@ from pathlib import Path
 import signal
 import threading
 import time
+from urllib.parse import urlparse
 
 from core import TargetGuard
 from core import action_to_http
+from core import tactile_marker_summary
 from core import validate_conversion
 from core import validate_metadata
 import numpy as np
@@ -20,8 +22,12 @@ from transport import RemotePolicy
 from transport import RobotHttp
 
 
-def load_config(path):
+def load_config(path, *, robot_url=None, policy_url=None):
     config = json.loads(path.read_text())
+    if robot_url is not None:
+        config["robot_url"] = robot_url
+    if policy_url is not None:
+        config["policy_url"] = policy_url
     for key in (
         "http_timeout_sec",
         "policy_timeout_sec",
@@ -41,6 +47,18 @@ def load_config(path):
         raise ValueError("tactile_format must be packed or shear")
     if not isinstance(config["prompt"], str) or not config["prompt"].strip():
         raise ValueError("A nonempty training-compatible prompt is required")
+    for key, schemes in (("robot_url", {"http", "https"}), ("policy_url", {"ws", "wss"})):
+        parsed = urlparse(config[key])
+        if parsed.scheme not in schemes or not parsed.netloc:
+            raise ValueError(f"{key} must be an absolute {sorted(schemes)} URL")
+    for name in ("front", "wrist", "tactile", "enable"):
+        spec = config.get("qos", {}).get(name)
+        if not isinstance(spec, dict):
+            raise ValueError(f"qos.{name} must be configured")
+        if spec.get("reliability") not in ("best_effort", "reliable"):
+            raise ValueError(f"qos.{name}.reliability must be best_effort or reliable")
+        if not isinstance(spec.get("depth"), int) or spec["depth"] <= 0:
+            raise ValueError(f"qos.{name}.depth must be a positive integer")
     return config
 
 
@@ -119,6 +137,8 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                 "pose_sent": False,
                 "gripper_sent": False,
             }
+            if "tactile_marker_motion" in sample.data:
+                record["tactile_marker"] = tactile_marker_summary(sample.data["tactile_marker_motion"])
             try:
                 command = guard.prepare(raw, measured, dt)
                 pose, width = action_to_http(command)
@@ -179,6 +199,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("config.json"))
     parser.add_argument("--conversion", type=Path, default=Path(__file__).with_name("tabero_conversion.json"))
+    parser.add_argument("--robot-url", help="Override config robot_url, e.g. http://172.31.179.19:5000")
+    parser.add_argument("--policy-url", help="Override config policy_url, e.g. ws://192.168.1.20:8000")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--no-tactile", action="store_true", help="Requires a separately trained RGB+state server")
     parser.add_argument("--seconds", type=float, default=30)
@@ -186,7 +208,7 @@ def main():
     args = parser.parse_args()
     if not np.isfinite(args.seconds) or args.seconds <= 0:
         parser.error("--seconds must be finite and positive")
-    config = load_config(args.config)
+    config = load_config(args.config, robot_url=args.robot_url, policy_url=args.policy_url)
     conversion_bytes = args.conversion.read_bytes()
     conversion = json.loads(conversion_bytes)
     validate_conversion(conversion)

@@ -2,8 +2,8 @@
   "robot_url": "http://192.168.1.10:5000",
   "policy_url": "ws://127.0.0.1:8000",
   "prompt": "fr3 zed DM-Tac W SDK 0.1.4 raw teleop via hilserl franka_server",
-  "front_topic": "/zed/zed_node/rgb/color/rect/image",
-  "front_compressed": false,
+  "front_topic": "/zed/zed_node/rgb/color/rect/image/compressed",
+  "front_compressed": true,
   "wrist_topic": "/camera/d405/color/image_raw",
   "wrist_compressed": false,
   "wrist_shape": [480, 640, 3],
@@ -13,6 +13,12 @@
   "left_topic": "/dmtac/left/packed_frame",
   "right_topic": "/dmtac/right/packed_frame",
   "enable_topic": "/tabero/enable",
+  "qos": {
+    "front": {"reliability": "reliable", "depth": 1},
+    "wrist": {"reliability": "reliable", "depth": 1},
+    "tactile": {"reliability": "best_effort", "depth": 1},
+    "enable": {"reliability": "reliable", "depth": 1}
+  },
   "http_timeout_sec": 0.15,
   "policy_timeout_sec": 1.0,
   "max_sensor_age_sec": 0.25,

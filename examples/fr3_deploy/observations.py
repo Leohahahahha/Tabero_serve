@@ -9,6 +9,7 @@ from core import Sample
 from core import crop_front
 from core import decode_image
 from core import decode_packed_shear
+from core import validate_tactile_marker_motion
 import cv2
 import numpy as np
 import rclpy
@@ -40,7 +41,6 @@ class LiveObservations:
         self.history = MarkerHistory(conversion["marker_field"]["shear_scale"])
         self.reader = RobotHttp(config["robot_url"], config["http_timeout_sec"])
         self.node = Node("tabero_fr3_observations")
-        qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.subscriptions = []
         if use_tactile and config["tactile_format"] == "packed":
             ipc = importlib.import_module(config["dmtac_ipc_module"])
@@ -50,20 +50,31 @@ class LiveObservations:
                 raise ValueError("Configured DM-Tac IPC schema differs from training source schema")
         for key in ("front", "wrist", *(("left", "right") if use_tactile else ())):
             compressed = key in ("front", "wrist") and config[f"{key}_compressed"]
+            qos_name = "tactile" if key in ("left", "right") else key
             self.subscriptions.append(
                 self.node.create_subscription(
                     CompressedImage if compressed else Image,
                     config[f"{key}_topic"],
                     lambda msg, key=key, compressed=compressed: self.on_image(key, msg, compressed=compressed),
-                    qos,
+                    self._qos(qos_name),
                 )
             )
-        self.subscriptions.append(self.node.create_subscription(Bool, config["enable_topic"], self.on_enable, qos))
+        self.subscriptions.append(
+            self.node.create_subscription(Bool, config["enable_topic"], self.on_enable, self._qos("enable"))
+        )
         self.threads = [
             threading.Thread(target=target, daemon=True) for target in (self.spin, self.poll_state, self.sample_loop)
         ]
         for thread in self.threads:
             thread.start()
+
+    def _qos(self, name):
+        spec = self.config["qos"][name]
+        reliability = {
+            "best_effort": ReliabilityPolicy.BEST_EFFORT,
+            "reliable": ReliabilityPolicy.RELIABLE,
+        }[spec["reliability"]]
+        return QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=spec["depth"], reliability=reliability)
 
     def on_enable(self, msg):
         with self.lock:
@@ -163,7 +174,8 @@ class LiveObservations:
                     "prompt": self.config["prompt"],
                 }
                 if self.use_tactile:
-                    data["tactile_marker_motion"] = self.history.append(frames["left"][0], frames["right"][0])
+                    marker = self.history.append(frames["left"][0], frames["right"][0])
+                    data["tactile_marker_motion"] = validate_tactile_marker_motion(marker)
                 sample = Sample(data, now, min(stamps))
                 with self.lock:
                     self.sample, self.problem = sample, None

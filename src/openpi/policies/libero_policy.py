@@ -26,6 +26,14 @@ def _parse_image(image) -> np.ndarray:
     return image
 
 
+def _tabero_marker_reference_grid() -> np.ndarray:
+    y = np.rint(np.linspace(0, 239, 9)).astype(np.float32)
+    x = np.rint(np.linspace(0, 319, 11)).astype(np.float32)
+    gx, gy = np.meshgrid(x, y)
+    side = np.stack([gx, gy], axis=-1).reshape(99, 2)
+    return np.concatenate([side, side]).astype(np.float32)
+
+
 @dataclasses.dataclass(frozen=True)
 class LiberoInputs(transforms.DataTransformFn):
     """
@@ -212,8 +220,12 @@ class TaberoActionOnlyInputs(TaberoTacFieldInputs):
         motion = np.asarray(data["tactile_marker_motion"])
         if state.shape != (7,) or motion.shape != (9, 198, 2):
             raise ValueError(f"Expected state [7] and marker history [9,198,2], got {state.shape}, {motion.shape}")
+        if motion.dtype != np.float32:
+            raise ValueError(f"tactile_marker_motion must be float32, got {motion.dtype}")
         if not np.isfinite(state).all() or not np.isfinite(motion).all():
             raise ValueError("State and marker history must be finite")
+        if not np.array_equal(motion[0], _tabero_marker_reference_grid()):
+            raise ValueError("tactile_marker_motion[0] must be the fixed left-then-right reference grid")
         if not -1e-6 <= state[6] <= 0.042501:
             raise ValueError("State gripper must be single-finger position in meters, within [0, 0.0425]")
         if "actions" in data:

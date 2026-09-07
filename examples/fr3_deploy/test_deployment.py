@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import run
 from scipy.spatial.transform import Rotation
+from scripts import serve_tabero
 import transport
 
 ROOT = Path(__file__).parent
@@ -99,6 +100,52 @@ def test_marker_grid_history_and_left_right_order():
     np.testing.assert_array_equal(second[0], first[0])
 
 
+def test_marker_contract_rejects_wrong_shape_dtype_and_nonfinite():
+    valid = core.MarkerHistory().append(
+        np.zeros((240, 320, 2), np.float32),
+        np.zeros((240, 320, 2), np.float32),
+    )
+    assert core.validate_tactile_marker_motion(valid).dtype == np.float32
+    for invalid, reason in (
+        (np.zeros((8, 198, 2), np.float32), "shape"),
+        (valid.astype(np.float64), "float32"),
+        (np.full((9, 198, 2), np.nan, np.float32), "non-finite"),
+        (np.zeros((9, 198, 2), np.float32), "reference grid"),
+    ):
+        with pytest.raises(ValueError, match=reason):
+            core.validate_tactile_marker_motion(invalid)
+
+
+def test_marker_summary_separates_left_and_right_current_motion():
+    marker = core.MarkerHistory().append(
+        np.zeros((240, 320, 2), np.float32),
+        np.zeros((240, 320, 2), np.float32),
+    )
+    marker[-1, :99, 0] += 3
+    marker[-1, 99:, 1] += 4
+    summary = core.tactile_marker_summary(marker)
+    assert summary["shape"] == [9, 198, 2]
+    assert summary["dtype"] == "float32"
+    assert summary["left_motion_mean"] == pytest.approx(3)
+    assert summary["right_motion_mean"] == pytest.approx(4)
+
+
+def test_remote_tactile_policy_rejects_bad_marker_before_send():
+    policy = object.__new__(transport.RemotePolicy)
+    policy.metadata = {"use_tactile": True, "action_horizon": 50}
+    sent = []
+    policy.ws = SimpleNamespace(send=sent.append)
+    policy.packer = SimpleNamespace(pack=lambda value: value)
+    marker = core.MarkerHistory().append(
+        np.zeros((240, 320, 2), np.float32),
+        np.zeros((240, 320, 2), np.float32),
+    )
+    sample = core.Sample({"tactile_marker_motion": marker.astype(np.float64)}, 1.0, 1.0)
+    with pytest.raises(ValueError, match="float32"):
+        policy.infer(sample)
+    assert sent == []
+
+
 @pytest.mark.parametrize("mode", ["full", "shear_depth"])
 def test_real_ipc_pack_decode_parity(mode):
     arrays = {
@@ -162,12 +209,55 @@ def test_server_contract_rejects_wrong_modalities_or_conversion():
         "dataset_fps": 10,
         "use_tactile": True,
         "conversion_sha256": "abc",
+        "predicts_wrench": False,
+        "tactile_input": core.TACTILE_INPUT,
+        "tactile_marker_shape": list(core.TACTILE_MARKER_SHAPE),
+        "tactile_marker_dtype": "float32",
+        "tactile_marker_layout": core.TACTILE_MARKER_LAYOUT,
     }
     core.validate_metadata(meta, use_tactile=True, conversion_sha256="abc")
     with pytest.raises(ValueError, match="use_tactile"):
         core.validate_metadata(meta, use_tactile=False, conversion_sha256="abc")
     with pytest.raises(ValueError, match="conversion_sha256"):
         core.validate_metadata(meta, use_tactile=True, conversion_sha256="def")
+    wrong = {**meta, "tactile_marker_shape": [8, 198, 2]}
+    with pytest.raises(ValueError, match="tactile_marker_shape"):
+        core.validate_metadata(wrong, use_tactile=True, conversion_sha256="abc")
+
+
+def test_live_config_uses_stream_specific_qos_and_url_overrides():
+    config = run.load_config(ROOT / "config.json")
+    assert config["front_topic"].endswith("/compressed")
+    assert config["front_compressed"] is True
+    assert config["qos"]["front"] == {"reliability": "reliable", "depth": 1}
+    assert config["qos"]["wrist"] == {"reliability": "reliable", "depth": 1}
+    assert config["qos"]["tactile"] == {"reliability": "best_effort", "depth": 1}
+    changed = run.load_config(
+        ROOT / "config.json",
+        robot_url="http://172.31.179.19:5000",
+        policy_url="ws://192.168.1.20:8000",
+    )
+    assert changed["robot_url"] == "http://172.31.179.19:5000"
+    assert changed["policy_url"] == "ws://192.168.1.20:8000"
+
+
+def test_server_rejects_wrong_tactile_conversion_before_model_inference():
+    metadata = {
+        "tactile_input": core.TACTILE_INPUT,
+        "tactile_marker_shape": list(core.TACTILE_MARKER_SHAPE),
+        "tactile_marker_dtype": "float32",
+        "tactile_marker_layout": core.TACTILE_MARKER_LAYOUT,
+    }
+    conversion = {
+        "marker_field": {"shape": [9, 198, 2], "history_length": 8, "side_order": ["left", "right"]}
+    }
+    serve_tabero.validate_tactile_contract(metadata, conversion, True)
+    with pytest.raises(ValueError, match="left-then-right"):
+        serve_tabero.validate_tactile_contract(
+            metadata,
+            {"marker_field": {"shape": [9, 198, 2], "history_length": 8, "side_order": ["right", "left"]}},
+            True,
+        )
 
 
 class Clock:

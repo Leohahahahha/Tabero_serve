@@ -8,6 +8,10 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 PROTOCOL = "tabero_fr3_absolute_v1"
+TACTILE_INPUT = "rolling_9x198x2_marker_coordinates_left_then_right"
+TACTILE_MARKER_SHAPE = (9, 198, 2)
+TACTILE_MARKER_DTYPE = np.dtype(np.float32)
+TACTILE_MARKER_LAYOUT = "reference_then_8_history_frames_left_then_right"
 
 
 def finite(value, shape, name):
@@ -39,14 +43,20 @@ def state_from_http(payload):
     return pose_to_state(payload["pose"], float(payload["gripper_width"]))
 
 
+def marker_reference_grid():
+    y = np.rint(np.linspace(0, 239, 9)).astype(int)
+    x = np.rint(np.linspace(0, 319, 11)).astype(int)
+    gx, gy = np.meshgrid(x.astype(np.float32), y.astype(np.float32))
+    side = np.stack([gx, gy], axis=-1).reshape(99, 2)
+    return np.concatenate([side, side]).astype(np.float32)
+
+
 def marker_positions(left, right, scale=1.0):
     left = finite(left, (240, 320, 2), "left shear")
     right = finite(right, (240, 320, 2), "right shear")
     y = np.rint(np.linspace(0, 239, 9)).astype(int)
     x = np.rint(np.linspace(0, 319, 11)).astype(int)
-    gx, gy = np.meshgrid(x.astype(np.float32), y.astype(np.float32))
-    side = np.stack([gx, gy], axis=-1).reshape(99, 2)
-    reference = np.concatenate([side, side])
+    reference = marker_reference_grid()
     shear = np.concatenate([left[np.ix_(y, x)].reshape(99, 2), right[np.ix_(y, x)].reshape(99, 2)])
     current = reference + np.float32(scale) * shear.astype(np.float32)
     if not np.isfinite(current).all():
@@ -64,7 +74,40 @@ class MarkerHistory:
         if not self.frames:
             self.frames.extend(current.copy() for _ in range(7))
         self.frames.append(current)
-        return np.stack([reference, *self.frames]).astype(np.float32)
+        return validate_tactile_marker_motion(np.stack([reference, *self.frames]).astype(np.float32))
+
+
+def validate_tactile_marker_motion(value):
+    """Reject any observation that is not the exact tactile training contract."""
+    array = np.asarray(value)
+    if array.shape != TACTILE_MARKER_SHAPE:
+        raise ValueError(
+            f"tactile_marker_motion must have shape {TACTILE_MARKER_SHAPE}, got {array.shape}"
+        )
+    if array.dtype != TACTILE_MARKER_DTYPE:
+        raise ValueError(
+            f"tactile_marker_motion must have dtype float32, got {array.dtype}"
+        )
+    if not np.isfinite(array).all():
+        raise ValueError("tactile_marker_motion contains non-finite values")
+    if not np.array_equal(array[0], marker_reference_grid()):
+        raise ValueError("tactile_marker_motion[0] is not the fixed left-then-right reference grid")
+    return np.ascontiguousarray(array)
+
+
+def tactile_marker_summary(value):
+    marker = validate_tactile_marker_motion(value)
+    displacement = marker[-1] - marker[0]
+    left_norm = np.linalg.norm(displacement[:99], axis=-1)
+    right_norm = np.linalg.norm(displacement[99:], axis=-1)
+    return {
+        "shape": list(marker.shape),
+        "dtype": marker.dtype.name,
+        "left_motion_mean": float(left_norm.mean()),
+        "left_motion_max": float(left_norm.max()),
+        "right_motion_mean": float(right_norm.mean()),
+        "right_motion_max": float(right_norm.max()),
+    }
 
 
 def decode_image(msg):
@@ -131,7 +174,11 @@ def validate_conversion(conversion):
     if conversion["output_contract"] != "tabero_action_only_lerobot_v2.1":
         raise ValueError("Unsupported conversion contract")
     field = conversion["marker_field"]
-    if field["shape"] != [9, 198, 2] or field["side_order"] != ["left", "right"]:
+    if (
+        field["shape"] != [9, 198, 2]
+        or field["history_length"] != 8
+        or field["side_order"] != ["left", "right"]
+    ):
         raise ValueError("Unsupported tactile marker shape/order")
     for key, size, count in (("grid_y_indices", 240, 9), ("grid_x_indices", 320, 11)):
         if field[key] != np.rint(np.linspace(0, size - 1, count)).astype(int).tolist():
@@ -151,7 +198,17 @@ def validate_metadata(metadata, *, use_tactile, conversion_sha256):
         "dataset_fps": 10,
         "use_tactile": use_tactile,
         "conversion_sha256": conversion_sha256,
+        "predicts_wrench": False,
     }
+    if use_tactile:
+        expected.update(
+            {
+                "tactile_input": TACTILE_INPUT,
+                "tactile_marker_shape": list(TACTILE_MARKER_SHAPE),
+                "tactile_marker_dtype": TACTILE_MARKER_DTYPE.name,
+                "tactile_marker_layout": TACTILE_MARKER_LAYOUT,
+            }
+        )
     for key, value in expected.items():
         if metadata.get(key) != value:
             raise ValueError(f"Server metadata mismatch: {key}={metadata.get(key)!r}, expected {value!r}")

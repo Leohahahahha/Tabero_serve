@@ -4,6 +4,7 @@ import time
 
 from core import Chunk
 from core import state_from_http
+from core import validate_tactile_marker_motion
 import numpy as np
 from openpi_client import msgpack_numpy
 import requests
@@ -62,6 +63,10 @@ class RemotePolicy:
         return msgpack_numpy.unpackb(result)
 
     def infer(self, sample, *, warmup=False):
+        if self.metadata.get("use_tactile"):
+            if "tactile_marker_motion" not in sample.data:
+                raise ValueError("Tactile policy requires tactile_marker_motion")
+            validate_tactile_marker_motion(sample.data["tactile_marker_motion"])
         self.ws.send(self.packer.pack(sample.data))
         output = self.receive(timeout=120 if warmup else self.timeout)
         actions = np.asarray(output["actions"], dtype=np.float64)

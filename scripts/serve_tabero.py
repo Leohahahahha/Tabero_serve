@@ -9,6 +9,27 @@ import logging
 from pathlib import Path
 
 
+def validate_tactile_contract(policy_metadata, conversion, use_tactile):
+    if not use_tactile:
+        return
+    expected_tactile = {
+        "tactile_input": "rolling_9x198x2_marker_coordinates_left_then_right",
+        "tactile_marker_shape": [9, 198, 2],
+        "tactile_marker_dtype": "float32",
+        "tactile_marker_layout": "reference_then_8_history_frames_left_then_right",
+    }
+    for key, value in expected_tactile.items():
+        if policy_metadata.get(key) != value:
+            raise ValueError(f"Tactile policy metadata mismatch: {key}")
+    marker = conversion.get("marker_field", {})
+    if (
+        marker.get("shape") != [9, 198, 2]
+        or marker.get("history_length") != 8
+        or marker.get("side_order") != ["left", "right"]
+    ):
+        raise ValueError("Conversion does not provide the required left-then-right [9,198,2] markers")
+
+
 def load_policy(config_name, checkpoint, conversion_path, denoise_steps):
     from openpi.policies import policy_config
     from openpi.training import config as configs
@@ -39,6 +60,7 @@ def load_policy(config_name, checkpoint, conversion_path, denoise_steps):
     conversion = json.loads(conversion_path.read_bytes())
     if conversion["output_contract"] != "tabero_action_only_lerobot_v2.1":
         raise ValueError("Unexpected training conversion metadata")
+    validate_tactile_contract(config.policy_metadata, conversion, use_tactile)
     metadata = {
         **config.policy_metadata,
         "deployment_protocol": "tabero_fr3_absolute_v1",
