@@ -81,13 +81,9 @@ def validate_tactile_marker_motion(value):
     """Reject any observation that is not the exact tactile training contract."""
     array = np.asarray(value)
     if array.shape != TACTILE_MARKER_SHAPE:
-        raise ValueError(
-            f"tactile_marker_motion must have shape {TACTILE_MARKER_SHAPE}, got {array.shape}"
-        )
+        raise ValueError(f"tactile_marker_motion must have shape {TACTILE_MARKER_SHAPE}, got {array.shape}")
     if array.dtype != TACTILE_MARKER_DTYPE:
-        raise ValueError(
-            f"tactile_marker_motion must have dtype float32, got {array.dtype}"
-        )
+        raise ValueError(f"tactile_marker_motion must have dtype float32, got {array.dtype}")
     if not np.isfinite(array).all():
         raise ValueError("tactile_marker_motion contains non-finite values")
     if not np.array_equal(array[0], marker_reference_grid()):
@@ -174,11 +170,7 @@ def validate_conversion(conversion):
     if conversion["output_contract"] != "tabero_action_only_lerobot_v2.1":
         raise ValueError("Unsupported conversion contract")
     field = conversion["marker_field"]
-    if (
-        field["shape"] != [9, 198, 2]
-        or field["history_length"] != 8
-        or field["side_order"] != ["left", "right"]
-    ):
+    if field["shape"] != [9, 198, 2] or field["history_length"] != 8 or field["side_order"] != ["left", "right"]:
         raise ValueError("Unsupported tactile marker shape/order")
     for key, size, count in (("grid_y_indices", 240, 9), ("grid_x_indices", 320, 11)):
         if field[key] != np.rint(np.linspace(0, size - 1, count)).astype(int).tolist():
@@ -225,6 +217,7 @@ class Sample:
 class Chunk:
     actions: np.ndarray
     observation_time: float
+    observation_state: np.ndarray
 
     def select(self, now, max_steps):
         age = now - self.observation_time
@@ -232,6 +225,18 @@ class Chunk:
         if index < 0 or index >= min(max_steps, len(self.actions)):
             raise ValueError(f"Action chunk expired: observation age={age:.3f}s, index={index}")
         return self.actions[index], index
+
+
+def action_distance_metrics(left, right):
+    """Physical differences between two absolute FR3 action/state vectors."""
+    left = finite(left, (7,), "left action/state")
+    right = finite(right, (7,), "right action/state")
+    rotation = Rotation.from_rotvec(left[3:6]).inv() * Rotation.from_rotvec(right[3:6])
+    return {
+        "position_m": float(np.linalg.norm(left[:3] - right[:3])),
+        "rotation_rad": float(rotation.magnitude()),
+        "single_finger_m": float(abs(left[6] - right[6])),
+    }
 
 
 class TargetGuard:

@@ -11,8 +11,9 @@ import numpy as np
 import pytest
 import run
 from scipy.spatial.transform import Rotation
-from scripts import serve_tabero
 import transport
+
+from scripts import serve_tabero
 
 ROOT = Path(__file__).parent
 
@@ -194,11 +195,24 @@ def test_training_crop_and_conversion():
 
 
 def test_chunk_discards_elapsed_actions_and_expires():
-    chunk = core.Chunk(np.repeat(state()[None], 50, axis=0), 10.0)
+    chunk = core.Chunk(np.repeat(state()[None], 50, axis=0), 10.0, state())
     _, index = chunk.select(10.245, 5)
     assert index == 2
     with pytest.raises(ValueError, match="expired"):
         chunk.select(10.51, 5)
+
+
+def test_action_distance_metrics_uses_so3_shortest_angle():
+    left = state()
+    right = left.copy()
+    left[3] = np.pi - 0.01
+    right[3] = -np.pi + 0.01
+    right[0] += 0.03
+    right[6] += 0.004
+    result = core.action_distance_metrics(left, right)
+    assert result["position_m"] == pytest.approx(0.03)
+    assert result["rotation_rad"] == pytest.approx(0.02)
+    assert result["single_finger_m"] == pytest.approx(0.004)
 
 
 def test_server_contract_rejects_wrong_modalities_or_conversion():
@@ -248,15 +262,13 @@ def test_server_rejects_wrong_tactile_conversion_before_model_inference():
         "tactile_marker_dtype": "float32",
         "tactile_marker_layout": core.TACTILE_MARKER_LAYOUT,
     }
-    conversion = {
-        "marker_field": {"shape": [9, 198, 2], "history_length": 8, "side_order": ["left", "right"]}
-    }
-    serve_tabero.validate_tactile_contract(metadata, conversion, True)
+    conversion = {"marker_field": {"shape": [9, 198, 2], "history_length": 8, "side_order": ["left", "right"]}}
+    serve_tabero.validate_tactile_contract(metadata, conversion, use_tactile=True)
     with pytest.raises(ValueError, match="left-then-right"):
         serve_tabero.validate_tactile_contract(
             metadata,
             {"marker_field": {"shape": [9, 198, 2], "history_length": 8, "side_order": ["right", "left"]}},
-            True,
+            use_tactile=True,
         )
 
 
@@ -305,7 +317,7 @@ def controller_fixture(
             actions[:, 6] += 0.001
             if invalid:
                 actions[:, 0] += 0.1
-            return core.Chunk(actions, sample.monotonic)
+            return core.Chunk(actions, sample.monotonic, sample.data["state"].copy())
 
         def close(self):
             pass
@@ -351,8 +363,21 @@ def test_shadow_makes_no_robot_writes_and_uses_delayed_index(monkeypatch, config
     execute(live=False)
     assert records == []
     rows = [json.loads(line) for line in log.getvalue().splitlines()]
-    assert rows[0]["chunk_index"] == 2
-    assert rows[0]["observation_age_sec"] == pytest.approx(0.2)
+    chunks = [row for row in rows if row["event"] == "inference_chunk"]
+    ticks = [row for row in rows if row["event"] == "control_tick"]
+    assert all(len(row["actions"]) == 50 for row in chunks)
+    assert len({row["chunk_id"] for row in chunks}) == len(chunks)
+    assert ticks[0]["chunk_index"] == 2
+    assert ticks[0]["observation_age_sec"] == pytest.approx(0.2)
+    expected_action0 = state()
+    expected_action0[6] += 0.001
+    assert ticks[0]["action0"] == pytest.approx(expected_action0.tolist())
+    assert ticks[0]["distances"]["action0_vs_observation"]["position_m"] == pytest.approx(0)
+    assert ticks[0]["distances"]["selected_vs_current"]["position_m"] == pytest.approx(0.0002)
+    assert ticks[0]["distances"]["selected_vs_action0"]["position_m"] == pytest.approx(0.0002)
+    assert ticks[0]["distances"]["current_vs_observation"]["position_m"] == pytest.approx(0)
+    assert ticks[0]["distances"]["selected_vs_previous_tick"] is None
+    assert ticks[0]["chunk_switched_since_previous_tick"] is False
 
 
 def test_shadow_records_rejected_predictions_without_writes(monkeypatch, config):
@@ -360,8 +385,9 @@ def test_shadow_records_rejected_predictions_without_writes(monkeypatch, config)
     execute(live=False)
     assert records == []
     rows = [json.loads(line) for line in log.getvalue().splitlines()]
-    assert len(rows) >= 2
-    assert all(not row["ok"] for row in rows)
+    ticks = [row for row in rows if row["event"] == "control_tick"]
+    assert len(ticks) >= 2
+    assert all(not row["ok"] for row in ticks)
 
 
 def test_live_splits_pose_and_width_then_holds_on_exit(monkeypatch, config):
@@ -372,7 +398,8 @@ def test_live_splits_pose_and_width_then_holds_on_exit(monkeypatch, config):
     assert records[1][0] == "width"
     assert records[1][1] == pytest.approx(0.042)
     assert records[-1][0] == "pose"  # final measured hold
-    assert all(json.loads(row)["ok"] for row in log.getvalue().splitlines())
+    rows = [json.loads(row) for row in log.getvalue().splitlines()]
+    assert all(row["ok"] for row in rows if row["event"] == "control_tick")
 
 
 def test_enable_loss_stops_and_holds(monkeypatch, config):
@@ -394,7 +421,8 @@ def test_invalid_first_target_never_actuates(monkeypatch, config):
     with pytest.raises(ValueError, match="jump"):
         execute(live=True)
     assert records == []
-    assert not json.loads(log.getvalue().splitlines()[0])["ok"]
+    rows = [json.loads(row) for row in log.getvalue().splitlines()]
+    assert not next(row for row in rows if row["event"] == "control_tick")["ok"]
 
 
 def test_partial_http_failure_is_not_retried(monkeypatch, config):
@@ -402,7 +430,8 @@ def test_partial_http_failure_is_not_retried(monkeypatch, config):
     with pytest.raises(TimeoutError, match="uncertain"):
         execute(live=True)
     assert [kind for kind, _ in records] == ["pose", "width", "pose"]
-    assert not json.loads(log.getvalue().splitlines()[0])["ok"]
+    rows = [json.loads(row) for row in log.getvalue().splitlines()]
+    assert not next(row for row in rows if row["event"] == "control_tick")["ok"]
 
 
 def test_http_rejects_stale_measured_stamp(monkeypatch):

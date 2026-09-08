@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlparse
 
 from core import TargetGuard
+from core import action_distance_metrics
 from core import action_to_http
 from core import tactile_marker_summary
 from core import validate_conversion
@@ -97,6 +98,10 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
     last_width = 2 * guard.last[6]
     commands_sent = False
     count = 0
+    chunk_id = 0
+    active_chunk_id = None
+    previous_prediction = None
+    previous_chunk_id = None
     try:
         while not stopped.is_set() and time.monotonic() - started < duration:
             now = time.monotonic()
@@ -115,9 +120,29 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
             if future is not None and future.done():
                 candidate = future.result()
                 future = None
-                if now - candidate.observation_time > config["max_result_age_sec"]:
+                candidate_age = now - candidate.observation_time
+                chunk_id += 1
+                accepted = candidate_age <= config["max_result_age_sec"]
+                log.write(
+                    json.dumps(
+                        {
+                            "event": "inference_chunk",
+                            "wall_time": time.time(),
+                            "mode": "execute" if execute else "shadow",
+                            "chunk_id": chunk_id,
+                            "accepted": accepted,
+                            "observation_age_sec_at_accept": candidate_age,
+                            "observation_state": candidate.observation_state.tolist(),
+                            "actions": candidate.actions.tolist(),
+                        }
+                    )
+                    + "\n"
+                )
+                log.flush()
+                if not accepted:
                     raise RuntimeError("Inference result too old; refusing stale targets")
                 chunk = candidate
+                active_chunk_id = chunk_id
             if future is None:
                 future = pool.submit(policy.infer, sample)
             if chunk is None:
@@ -126,14 +151,32 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                 continue
             raw, index = chunk.select(now, config["max_chunk_steps"])
             measured = source.measured_state()
+            action0 = chunk.actions[0]
             dt = 0.1 if last_command_time is None else min(0.1, now - last_command_time)
             record = {
+                "event": "control_tick",
                 "wall_time": time.time(),
                 "mode": "execute" if execute else "shadow",
+                "chunk_id": active_chunk_id,
                 "observation_age_sec": now - chunk.observation_time,
                 "chunk_index": index,
+                "observation_state": chunk.observation_state.tolist(),
                 "measured": measured.tolist(),
+                "action0": action0.tolist(),
                 "prediction": raw.tolist(),
+                "distances": {
+                    "action0_vs_observation": action_distance_metrics(action0, chunk.observation_state),
+                    "action0_vs_current": action_distance_metrics(action0, measured),
+                    "selected_vs_current": action_distance_metrics(raw, measured),
+                    "selected_vs_action0": action_distance_metrics(raw, action0),
+                    "current_vs_observation": action_distance_metrics(measured, chunk.observation_state),
+                    "selected_vs_previous_tick": (
+                        None if previous_prediction is None else action_distance_metrics(raw, previous_prediction)
+                    ),
+                },
+                "chunk_switched_since_previous_tick": (
+                    previous_chunk_id is not None and active_chunk_id != previous_chunk_id
+                ),
                 "pose_sent": False,
                 "gripper_sent": False,
             }
@@ -172,6 +215,8 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
             finally:
                 log.write(json.dumps(record) + "\n")
                 log.flush()
+            previous_prediction = raw.copy()
+            previous_chunk_id = active_chunk_id
             count += 1
             if count % 10 == 0:
                 logging.info(
@@ -243,6 +288,22 @@ def main():
                 use_tactile=not args.no_tactile,
                 conversion_sha256=hashlib.sha256(conversion_bytes).hexdigest(),
             )
+            log.write(
+                json.dumps(
+                    {
+                        "event": "policy_metadata",
+                        "config": policy.metadata.get("config"),
+                        "checkpoint": policy.metadata.get("checkpoint"),
+                        "norm_stats_sha256": policy.metadata.get("norm_stats_sha256"),
+                        "conversion_sha256": policy.metadata.get("conversion_sha256"),
+                        "action_horizon": policy.metadata.get("action_horizon"),
+                        "dataset_fps": policy.metadata.get("dataset_fps"),
+                        "use_tactile": policy.metadata.get("use_tactile"),
+                    }
+                )
+                + "\n"
+            )
+            log.flush()
             source = LiveObservations(config, conversion, use_tactile=not args.no_tactile)
             robot = RobotHttp(config["robot_url"], config["http_timeout_sec"])
             control_loop(
