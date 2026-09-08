@@ -9,6 +9,7 @@ from core import Sample
 from core import crop_front
 from core import decode_image
 from core import decode_packed_shear
+from core import validate_sensor_timing
 from core import validate_tactile_marker_motion
 import cv2
 import numpy as np
@@ -159,11 +160,13 @@ class LiveObservations:
                 with self.lock:
                     frames = self.frames.copy()
                 keys = ("front", "wrist", "state", *(("left", "right") if self.use_tactile else ()))
-                stamps = [frames[k][1] for k in keys]
-                if time.time() - min(stamps) > self.config["max_sensor_age_sec"]:
-                    raise ValueError("Stale sensor stream")
-                if max(stamps) - min(stamps) > self.config["max_sensor_skew_sec"]:
-                    raise ValueError("Sensor capture timestamps are not synchronized")
+                stamps = {key: frames[key][1] for key in keys}
+                validate_sensor_timing(
+                    stamps,
+                    time.time(),
+                    self.config["max_sensor_age_sec"],
+                    self.config["max_sensor_skew_sec"],
+                )
                 wrist = frames["wrist"][0]
                 if list(wrist.shape) != self.config["wrist_shape"]:
                     raise ValueError("Wrist resolution differs from configured training resolution")
@@ -176,7 +179,7 @@ class LiveObservations:
                 if self.use_tactile:
                     marker = self.history.append(frames["left"][0], frames["right"][0])
                     data["tactile_marker_motion"] = validate_tactile_marker_motion(marker)
-                sample = Sample(data, now, min(stamps))
+                sample = Sample(data, now, min(stamps.values()))
                 with self.lock:
                     self.sample, self.problem = sample, None
             except Exception as exc:

@@ -145,6 +145,7 @@ little-endian float32 `[240,320,2]` shear，其后为 depth。客户端通过附
 因此机器人服务器、相机发布主机和客户端需对时；不能比较不同主机的 monotonic 时间。
 默认观测最老采集时间不得超过 250 ms，多模态时间差不超过 100 ms。
 图像中重复的 header.stamp 不会刷新时效；缺失/停滞的时间戳会被拒绝。
+时间同步失败会报告总skew、最老/最新的流以及各流age，便于区分固定时钟偏移和单个话题掉帧。
 
 触觉模型不会在marker缺失时自动补零。客户端采样后、WebSocket发送前和模型adapter入口都会
 验证`float32 [9,198,2]`及有限值；服务端还会通过metadata与conversion文件核对shape、dtype、

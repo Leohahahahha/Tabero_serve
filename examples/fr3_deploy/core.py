@@ -239,6 +239,27 @@ def action_distance_metrics(left, right):
     }
 
 
+def validate_sensor_timing(stamps, now, max_age, max_skew):
+    """Validate multimodal wall-clock stamps and report the stream causing skew."""
+    if not stamps:
+        raise ValueError("No sensor timestamps")
+    nonfinite = [name for name, stamp in stamps.items() if not np.isfinite(stamp)]
+    if nonfinite:
+        raise ValueError(f"Non-finite sensor timestamps: {nonfinite}")
+    oldest = min(stamps, key=stamps.get)
+    newest = max(stamps, key=stamps.get)
+    ages = {name: round(now - stamp, 6) for name, stamp in stamps.items()}
+    oldest_age = now - stamps[oldest]
+    skew = stamps[newest] - stamps[oldest]
+    if oldest_age > max_age:
+        raise ValueError(f"Stale sensor stream: oldest={oldest}, age={oldest_age:.3f}s, ages_sec={ages}")
+    if skew > max_skew:
+        raise ValueError(
+            "Sensor capture timestamps are not synchronized: "
+            f"skew={skew:.3f}s, oldest={oldest}, newest={newest}, ages_sec={ages}"
+        )
+
+
 class TargetGuard:
     """Reject large errors, then limit small target changes in physical units."""
 

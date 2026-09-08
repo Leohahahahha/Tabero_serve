@@ -215,6 +215,14 @@ def test_action_distance_metrics_uses_so3_shortest_angle():
     assert result["single_finger_m"] == pytest.approx(0.004)
 
 
+def test_sensor_timing_error_identifies_oldest_and_newest_streams():
+    core.validate_sensor_timing({"front": 9.95, "wrist": 9.96, "state": 9.97}, 10.0, 0.25, 0.1)
+    with pytest.raises(ValueError, match=r"skew=0.120s, oldest=front, newest=state"):
+        core.validate_sensor_timing({"front": 9.80, "wrist": 9.90, "state": 9.92}, 10.0, 0.25, 0.1)
+    with pytest.raises(ValueError, match=r"Stale sensor stream: oldest=left"):
+        core.validate_sensor_timing({"left": 9.70, "right": 9.71}, 10.0, 0.25, 0.1)
+
+
 def test_server_contract_rejects_wrong_modalities_or_conversion():
     meta = {
         "deployment_protocol": core.PROTOCOL,
