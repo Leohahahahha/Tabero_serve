@@ -169,7 +169,15 @@ little-endian float32 `[240,320,2]` shear，其后为 depth。客户端通过附
 ```
 
 该模式会读取真实状态、双相机及双触觉，首次调用用于模型编译并丢弃输出。
-正式预测逐步写入 JSONL，包括输入状态、预测、选取的 chunk 索引、限速目标和 HTTP payload。
+正式预测逐步写入 JSONL。每个新推理结果只写一条`inference_chunk`记录，包含唯一`chunk_id`、
+模型看到的状态和完整`50×7`动作块；每个控制周期写一条`control_tick`记录，包含`action[0]`、
+实际选中的`action[k]`、当前状态、限速目标和 HTTP payload。`distances`同时给出`action[0]`相对
+观测/当前状态、`action[k]`相对当前状态/`action[0]`、当前状态相对观测状态以及与上一控制周期
+目标之间的位置、SO(3)最短旋转角和单指开度差。结合`chunk_switched_since_previous_tick`可以区分
+模型首步异常、chunk内部未来轨迹、shadow不运动以及新旧chunk切换不连续。
+连接服务后还会写一条`policy_metadata`，记录服务实际使用的config、checkpoint、
+`norm_stats_sha256`和`conversion_sha256`。这可以确认两次shadow是否加载了同一组checkpoint本地
+归一化资产；哈希一致只证明文件一致，仍需结合训练数据来源确认该资产是否属于当前模型和数据转换。
 触觉模型还会记录marker的shape、dtype及左右当前帧相对参考网格的平均/最大位移，便于确认真机触觉正在变化。
 位置/姿态跳变、夹爪越界等预测会记录 `ok: false` 和原因；shadow 继续观察，不发送控制请求。
 观测断流、模型通信错误和推理过期仍会终止程序。

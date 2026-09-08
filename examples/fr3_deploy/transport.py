@@ -72,7 +72,10 @@ class RemotePolicy:
         actions = np.asarray(output["actions"], dtype=np.float64)
         if actions.shape != (self.metadata["action_horizon"], 7) or not np.isfinite(actions).all():
             raise ValueError(f"Expected finite action chunk [{self.metadata['action_horizon']},7]")
-        return Chunk(actions, sample.monotonic)
+        observation_state = np.asarray(sample.data["state"], dtype=np.float64)
+        if observation_state.shape != (7,) or not np.isfinite(observation_state).all():
+            raise ValueError("Expected finite observation state [7]")
+        return Chunk(actions, sample.monotonic, observation_state.copy())
 
     def close(self):
         self.ws.close()
