@@ -89,6 +89,9 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
     last_command_time = None
     last_width = 2 * guard.last[6]
     commands_sent = False
+    pose_commands_sent = 0
+    gripper_commands_sent = 0
+    hold_sent = False
     count = 0
     chunk_id = 0
     previous_prediction = None
@@ -186,11 +189,13 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                     # Mark BEFORE sending: a timed-out request might already have moved the robot.
                     commands_sent = True
                     robot.command_pose(pose)
+                    pose_commands_sent += 1
                     record["pose_sent"] = True
                     if abs(width - last_width) > 0.0001:
                         if stopped.is_set() or not source.enable_is_fresh(warmup_done):
                             raise RuntimeError("Enable lost between pose and gripper commands")
                         robot.command_width(width)
+                        gripper_commands_sent += 1
                         record["gripper_sent"] = True
                         last_width = width
                     guard.commit(command)
@@ -228,10 +233,18 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                 state, _ = robot.read_state(config["max_sensor_age_sec"])
                 pose, _ = action_to_http(state)
                 robot.command_pose(pose)
+                hold_sent = True
                 logging.warning("Sent best-effort measured-pose hold; this is not a hardware emergency stop")
             except Exception:
                 logging.exception("Hold request failed; use the robot's hardware stop")
         policy.close()
+    return {
+        "reason": "stop_signal" if stopped.is_set() else "duration_elapsed",
+        "control_ticks": count,
+        "pose_commands_sent": pose_commands_sent,
+        "gripper_commands_sent": gripper_commands_sent,
+        "hold_sent": hold_sent,
+    }
 
 
 def main():
@@ -290,6 +303,7 @@ def main():
                         "event": "policy_metadata",
                         "config": policy.metadata.get("config"),
                         "checkpoint": policy.metadata.get("checkpoint"),
+                        "asset_id": policy.metadata.get("asset_id"),
                         "norm_stats_sha256": policy.metadata.get("norm_stats_sha256"),
                         "conversion_sha256": policy.metadata.get("conversion_sha256"),
                         "action_horizon": policy.metadata.get("action_horizon"),
@@ -302,9 +316,12 @@ def main():
             log.flush()
             source = LiveObservations(config, conversion, use_tactile=not args.no_tactile)
             robot = RobotHttp(config["robot_url"], config["http_timeout_sec"])
-            control_loop(
+            summary = control_loop(
                 source, policy, robot, config, execute=args.execute, duration=args.seconds, stopped=stopped, log=log
             )
+            log.write(json.dumps({"event": "completed", **summary}) + "\n")
+            log.flush()
+            logging.info("Run completed: %s", summary)
         except BaseException as exc:
             log.write(json.dumps({"event": "stopped", "reason": str(exc)}) + "\n")
             raise

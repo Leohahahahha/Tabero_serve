@@ -410,7 +410,9 @@ def controller_fixture(
     log = io.StringIO()
 
     def execute(*, live):
-        run.control_loop(Source(), Policy(), Robot(), config, execute=live, duration=0.65, stopped=clock, log=log)
+        return run.control_loop(
+            Source(), Policy(), Robot(), config, execute=live, duration=0.65, stopped=clock, log=log
+        )
 
     return execute, records, log
 
@@ -450,7 +452,7 @@ def test_shadow_records_saturated_predictions_without_writes(monkeypatch, config
 
 def test_live_splits_pose_and_width_then_holds_on_exit(monkeypatch, config):
     execute, records, log = controller_fixture(monkeypatch, config)
-    execute(live=True)
+    summary = execute(live=True)
     assert records[0][0] == "pose"
     assert records[0][1].shape == (7,)
     assert records[1][0] == "width"
@@ -458,6 +460,13 @@ def test_live_splits_pose_and_width_then_holds_on_exit(monkeypatch, config):
     assert records[-1][0] == "pose"  # final measured hold
     rows = [json.loads(row) for row in log.getvalue().splitlines()]
     assert all(row["ok"] for row in rows if row["event"] == "control_tick")
+    assert summary == {
+        "reason": "duration_elapsed",
+        "control_ticks": 4,
+        "pose_commands_sent": 4,
+        "gripper_commands_sent": 4,
+        "hold_sent": True,
+    }
 
 
 def test_enable_loss_stops_and_holds(monkeypatch, config):
