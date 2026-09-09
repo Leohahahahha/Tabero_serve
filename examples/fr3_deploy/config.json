@@ -1,7 +1,7 @@
 {
   "robot_url": "http://192.168.1.10:5000",
   "policy_url": "ws://127.0.0.1:8000",
-  "prompt": "fr3 zed DM-Tac W SDK 0.1.4 raw teleop via hilserl franka_server",
+  "prompt": "Align the black circular component with the receiving hole on the gray circular component and insert it to complete the assembly.",
   "front_topic": "/zed/zed_node/rgb/color/rect/image/compressed",
   "front_compressed": true,
   "wrist_topic": "/camera/d405/color/image_raw",
