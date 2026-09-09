@@ -36,6 +36,7 @@
 | 2026-09-09 | Tokenizer 测试默认缓存目录只读 | 工程环境 | 已解决 |
 | 2026-09-09 | v3 4000/20000 checkpoint 指标冲突 | 模型选择 | 离线选择完成、待多 seed 与 shadow 验证 |
 | 2026-09-09 | 预测饱和、同步推理与 chunk 步数协调 | 部署控制 | K=1 已实现、K=2 待 shadow/真机验证 |
+| 2026-09-09 | v1 服务配置加载 v3 checkpoint 20000 | 模型资产 | 已定位、修复说明与诊断，待推理主机验证 |
 
 ## 1. Bash 多行粘贴触发 `free(): invalid pointer`
 
@@ -269,6 +270,17 @@
 - **解决方案**：有限预测依次投影到XYZ workspace、相对实测位置5 cm、SO(3)最短旋转0.35 rad和单指`[0,42.5] mm`，再按每周期位置、旋转和夹爪速度限幅；日志保留raw、bounded、limited三层动作和全部`limits_applied`。控制循环改为一份观测对应一次阻塞推理，初始固定执行action0，即K=1。推理期间没有执行新chunk前缀，因此不能按结果年龄跳到action1/action2。同步shadow证明跨chunk波动、跟踪和饱和比例可接受后，才试K=2：action0后等待100 ms，重新读取状态并检查tracking/enable，再执行action1并重新采样推理。实测workspace/夹爪非法、跟踪误差、NaN/Inf、传感器/推理超时、心跳丢失和HTTP失败继续停止。
 - **验证范围**：CPU模拟覆盖所有预测边界、同步索引0、慢推理拒绝、心跳中断、HTTP部分失败和shadow零写入；保存的v3预测完成action0～7逐horizon分析。尚未验证ROS现场延迟、K=1/K=2模型服务吞吐、底层控制器响应或任务成功率。饱和命令满足客户端几何边界，不证明碰撞安全，也不证明模型质量合格。
 - **面试讲法**：动作chunk索引由机器人真实执行进度决定，不能把推理耗时直接换算成跳过的动作步。先用同步action0形成低频闭环，再以跟踪和饱和日志决定是否增加到K=2；需要连续10 Hz时应采用流水线或底层时间戳轨迹接口。
+
+## 23. v1 服务配置加载 v3 checkpoint 20000
+
+- **日期**：2026-09-09。
+- **状态**：根因已定位，v3部署代码和可执行命令已补齐；待推理主机拉取后验证真实 checkpoint 加载。
+- **现象**：服务以`--config pi0_lora_tacfield_local_tactile_lora_smoke`和 checkpoint 20000 启动，在模型参数恢复前报缺少`actions/state/tactile_prefix`归一化统计。
+- **证据**：日志明确尝试读取`assets/local/tabero_lerobot_compact_v1`；实际20000来自`pi0_lora_tabero_v3_touch_20k/v3_touch_so3_20k_run1`，其统计文件位于`assets/local/tabero_lerobot_compact_v3/norm_stats.json`，SHA256为`3179b7ee7553cac64f3ac8a40897ed620b78b2ee354f9a297534f88cc66a0aed`并包含三组所需统计。
+- **根因**：checkpoint路径换成20000后仍沿用旧v1 config。config决定`asset_id`、SO(3)动作正反变换、触觉LoRA结构和模型恢复契约，因此不能只替换checkpoint目录。
+- **解决方案**：服务改用`--config pi0_lora_tabero_v3_touch_20k`；将该v3配置、SO(3)变换和测试提交到部署分支。资产错误现在同时报告配置期望目录、实际可用目录和配置名，服务metadata新增`asset_id`。
+- **验证范围**：本地读取确认20000资产结构和统计键；CPU测试覆盖移动后的v3 checkpoint资产加载及v1/v3错配提示。尚未在推理主机实际分配GPU和严格恢复20000参数。
+- **面试讲法**：checkpoint不仅是权重。部署必须把权重、模型配置、动作变换和归一化统计作为一个不可拆分的版本化资产，通过`asset_id`和hash在启动阶段阻止混配。
 
 ## 当前推荐的端到端排查顺序
 

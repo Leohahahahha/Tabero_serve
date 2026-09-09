@@ -18,18 +18,18 @@ import tqdm_loggable.auto as tqdm
 import wandb
 
 import openpi.models.model as _model
+from openpi.models.pi0 import Pi0
 import openpi.shared.array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
+from openpi.shared.tactile_type import TactileType
 import openpi.training.checkpoints as _checkpoints
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
-import openpi.training.optimizer as _optimizer
 import openpi.training.numerics as numerics
+import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
-from openpi.models.pi0 import Pi0
-from openpi.shared.tactile_type import TactileType
 
 
 def eval_step(rng, state, batch):
@@ -95,6 +95,12 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     return traverse_util.unflatten_dict(
         {k: v for k, v in traverse_util.flatten_dict(loaded_params).items() if not isinstance(v, jax.ShapeDtypeStruct)}
     )
+
+
+def checkpoint_step_and_due(config: _config.TrainConfig, loop_step: int, start_step: int) -> tuple[int, bool]:
+    """Return the checkpoint label and whether this completed update is periodic."""
+    checkpoint_step = loop_step + 1 if config.checkpoint_step_is_update_count else loop_step
+    return checkpoint_step, checkpoint_step % config.save_interval == 0 and checkpoint_step > start_step
 
 
 @at.typecheck
@@ -287,16 +293,21 @@ def main(config: _config.TrainConfig):
         if config.eval_interval < 0 or config.eval_num_batches <= 0:
             raise ValueError("Evaluation interval and batch count must be positive")
         eval_loader = _data_loader.create_data_loader(
-            config, sharding=data_sharding, split="validation", shuffle=False,
+            config,
+            sharding=data_sharding,
+            split="validation",
+            shuffle=False,
             num_batches=config.eval_num_batches,
         )
 
-    # Log images from first batch to sanity check.
-    images_to_log = [
-        wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
-        for i in range(min(5, len(next(iter(batch[0].images.values())))))
-    ]
-    wandb.log({"camera_views": images_to_log}, step=0)
+    # Camera images are dataset content, so uploading them is an independent,
+    # explicit choice from logging scalar training metrics.
+    if config.wandb_enabled and config.wandb_log_images:
+        images_to_log = [
+            wandb.Image(np.concatenate([np.array(img[i]) for img in batch[0].images.values()], axis=1))
+            for i in range(min(5, len(next(iter(batch[0].images.values())))))
+        ]
+        wandb.log({"camera_views": images_to_log}, step=0)
 
     train_state, train_state_sharding = init_train_state(config, init_rng, mesh, resume=resuming)
     jax.block_until_ready(train_state)
@@ -308,21 +319,26 @@ def main(config: _config.TrainConfig):
     trainable = train_state.params.filter(config.trainable_filter)
     trainable_count = sum(x.size for x in jax.tree.leaves(trainable))
     total_count = sum(x.size for x in jax.tree.leaves(train_state.params))
-    logging.info("Trainable parameters: %d / %d (%.3f%%)",
-                 trainable_count, total_count, 100 * trainable_count / total_count)
+    logging.info(
+        "Trainable parameters: %d / %d (%.3f%%)", trainable_count, total_count, 100 * trainable_count / total_count
+    )
     logging.info("Trainable paths: %s", list(trainable.flat_state()))
     gradient_paths = [jax.tree_util.keystr(p) for p, _ in jax.tree_util.tree_flatten_with_path(trainable)[0]]
     if not bool(jax.device_get(numerics.all_finite((train_state.params, train_state.opt_state)))):
         raise FloatingPointError("Initial model or optimizer contains non-finite values")
     if getattr(config.model, "tactile_prefix_lora_rank", 0):
         tactile_lora = {
-            k: v for k, v in traverse_util.flatten_dict(trainable.to_pure_dict(), sep="/").items()
+            k: v
+            for k, v in traverse_util.flatten_dict(trainable.to_pure_dict(), sep="/").items()
             if k.startswith("tactile_prefix_encoder/") and "/lora_" in k
         }
         if not tactile_lora:
             raise ValueError("Tactile LoRA configured but no tactile adapter parameters are trainable")
-        logging.info("Trainable tactile LoRA: %d parameters in %d leaves",
-                     sum(v.size for v in tactile_lora.values()), len(tactile_lora))
+        logging.info(
+            "Trainable tactile LoRA: %d parameters in %d leaves",
+            sum(v.size for v in tactile_lora.values()),
+            len(tactile_lora),
+        )
     metrics_path = config.checkpoint_dir / "metrics.jsonl"
     (config.checkpoint_dir / "run_config.txt").write_text(repr(config))
 
@@ -340,10 +356,13 @@ def main(config: _config.TrainConfig):
         }
         obs, targets = failed_batch
         arrays = traverse_util.flatten_dict({"observation": obs.to_dict(), "actions": targets}, sep="/")
-        np.savez_compressed(config.checkpoint_dir / "failed_batch.npz",
-                            **{k: np.asarray(jax.device_get(v)) for k, v in arrays.items()})
+        np.savez_compressed(
+            config.checkpoint_dir / "failed_batch.npz", **{k: np.asarray(jax.device_get(v)) for k, v in arrays.items()}
+        )
         (config.checkpoint_dir / "numerical_failure.json").write_text(json.dumps(report, indent=2, allow_nan=False))
-        healthy_step = max(0, int(train_state.step) - 1)
+        healthy_step = (
+            int(train_state.step) if config.checkpoint_step_is_update_count else max(0, int(train_state.step) - 1)
+        )
         if healthy_step not in checkpoint_manager.all_steps():
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, healthy_step)
         checkpoint_manager.wait_until_finished()
@@ -415,11 +434,14 @@ def main(config: _config.TrainConfig):
         if eval_loader is not None and ((step + 1) % config.eval_interval == 0 or step == config.num_train_steps - 1):
             evaluate(step + 1)
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+        checkpoint_step, periodic_save = checkpoint_step_and_due(config, step, start_step)
+        if periodic_save or step == config.num_train_steps - 1:
+            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, checkpoint_step)
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
+    if config.wandb_enabled:
+        wandb.finish()
 
 
 if __name__ == "__main__":

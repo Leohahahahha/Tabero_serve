@@ -54,9 +54,18 @@ def load_policy(config_name, checkpoint, conversion_path, denoise_steps):
     )
     data_config = config.data.create(config.assets_dirs, config.model)
     required_stats = {"state", "actions"} | ({"tactile_prefix"} if use_tactile else set())
-    if data_config.norm_stats is None or not required_stats.issubset(data_config.norm_stats):
-        raise ValueError(f"Checkpoint assets must contain {sorted(required_stats)} normalization statistics")
     stats_path = checkpoint / "assets" / data_config.asset_id / "norm_stats.json"
+    present_stats = set(data_config.norm_stats or {})
+    if not required_stats.issubset(present_stats):
+        available_assets = sorted(
+            str(path.parent.relative_to(checkpoint / "assets"))
+            for path in (checkpoint / "assets").rglob("norm_stats.json")
+        )
+        raise ValueError(
+            f"Config {config_name!r} expects asset_id {data_config.asset_id!r} and normalization statistics "
+            f"{sorted(required_stats)} at {stats_path}; present keys={sorted(present_stats)}, "
+            f"checkpoint asset_ids={available_assets}. Use the exact training config for this checkpoint."
+        )
     conversion = json.loads(conversion_path.read_bytes())
     if conversion["output_contract"] != "tabero_action_only_lerobot_v2.1":
         raise ValueError("Unexpected training conversion metadata")
@@ -68,6 +77,7 @@ def load_policy(config_name, checkpoint, conversion_path, denoise_steps):
         "action_horizon": config.model.action_horizon,
         "config": config_name,
         "checkpoint": str(checkpoint),
+        "asset_id": data_config.asset_id,
         "norm_stats_sha256": hashlib.sha256(stats_path.read_bytes()).hexdigest(),
         "conversion_sha256": hashlib.sha256(conversion_path.read_bytes()).hexdigest(),
     }

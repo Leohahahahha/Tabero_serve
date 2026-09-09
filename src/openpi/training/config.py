@@ -424,6 +424,7 @@ class TaberoTacFieldDataConfig(DataConfigFactory):
     """
 
     extra_delta_transform: bool = True
+    use_so3_relative_actions: bool = False
     action_only: bool = False
 
     @override
@@ -438,11 +439,19 @@ class TaberoTacFieldDataConfig(DataConfigFactory):
         if self.extra_delta_transform:
             # Implementation note.
             # Action/force dimensions and loss handling.
-            delta_action_mask = _transforms.make_bool_mask(6, -1)
-            data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(delta_action_mask)],
-                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
-            )
+            if self.use_so3_relative_actions:
+                data_transforms = data_transforms.push(
+                    inputs=[_transforms.RelativePoseActions()],
+                    outputs=[_transforms.AbsolutePoseActions()],
+                )
+            else:
+                delta_action_mask = _transforms.make_bool_mask(6, -1)
+                data_transforms = data_transforms.push(
+                    inputs=[_transforms.DeltaActions(delta_action_mask)],
+                    outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+                )
+        elif self.use_so3_relative_actions:
+            raise ValueError("SO(3) relative actions require extra_delta_transform=True")
 
         model_transforms = ModelTransformFactory()(model_config)
 
@@ -765,6 +774,12 @@ class TrainConfig:
 
     # If true, will enable wandb logging.
     wandb_enabled: bool = True
+    # If true, upload a montage from the first training batch to W&B. Scalar
+    # metrics and config metadata are still logged when this is false.
+    wandb_log_images: bool = True
+    # Legacy configurations name checkpoints with the zero-based loop index.
+    # New configurations can instead name them by completed update count.
+    checkpoint_step_is_update_count: bool = False
 
     # Used to pass metadata to the policy server.
     policy_metadata: dict[str, Any] | None = None
@@ -1644,6 +1659,76 @@ _tabero_touch_comparison = dataclasses.replace(
     lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=100, peak_lr=1e-5, decay_steps=3000, decay_lr=1e-6),
 )
 _CONFIGS.append(_tabero_touch_comparison)
+
+# Fresh v3 real-FR3 tactile run. It restores only the published Tabero weights;
+# train-only normalization assets are generated independently for this dataset.
+_tabero_v3_touch_20k = dataclasses.replace(
+    next(c for c in _CONFIGS if c.name == "pi0_lora_tacfield_local_tactile_lora_smoke"),
+    name="pi0_lora_tabero_v3_touch_20k",
+    project_name="tabero-vtla",
+    data=TaberoTacFieldDataConfig(
+        repo_id="local/tabero_lerobot_compact_v3",
+        base_config=DataConfig(
+            root="/data/yanghaojun/datasets/tabero_lerobot_compact_v3",
+            episodes=tuple(i for i in range(29) if i not in (4, 14, 24)),
+            validation_episodes=(4, 14, 24),
+            video_backend="pyav",
+            columns=(
+                "state",
+                "actions",
+                "tactile_marker_motion",
+                "timestamp",
+                "frame_index",
+                "episode_index",
+                "index",
+                "task_index",
+            ),
+            prompt_from_task=True,
+        ),
+        action_only=True,
+        extra_delta_transform=True,
+        use_so3_relative_actions=True,
+    ),
+    batch_size=4,
+    num_workers=4,
+    num_train_steps=20_000,
+    log_interval=10,
+    eval_interval=1_000,
+    # v3 held-out episodes contain 690 frames; batch 4 evaluates 688 without
+    # changing the global training batch used by the earlier comparisons.
+    eval_num_batches=172,
+    save_interval=4_000,
+    keep_period=4_000,
+    wandb_enabled=True,
+    # Do not upload camera frames merely because scalar W&B tracking is enabled.
+    wandb_log_images=False,
+    checkpoint_step_is_update_count=True,
+    lr_schedule=_optimizer.CosineDecaySchedule(
+        warmup_steps=500,
+        peak_lr=1e-5,
+        decay_steps=20_000,
+        decay_lr=1e-6,
+    ),
+    policy_metadata={
+        **_tabero_local_smoke.policy_metadata,
+        "dataset_version": "tabero_lerobot_compact_v3",
+        "action_label_source": "next_observation_state_within_episode",
+        "training_action_representation": "relative_xyz_so3_rotvec_absolute_gripper",
+        "terminal_source_frame_omitted": True,
+        "dataset_timing_policy": "compact",
+        "dataset_missing_candidate_steps": 18,
+        "deployment_translation_guard_m_s": 0.02,
+        "expert_labels_clipped_to_deployment_rate": False,
+        "tactile_adaptation": "tcn_lora",
+        "tactile_lora_rank": 16,
+        "tactile_lora_alpha": 16.0,
+        "task_prompt": (
+            "Align the black circular component with the receiving hole on the gray circular component "
+            "and insert it to complete the assembly."
+        ),
+    },
+)
+_CONFIGS.append(_tabero_v3_touch_20k)
 _CONFIGS.append(dataclasses.replace(
     _tabero_touch_comparison,
     name="pi0_lora_tabero_rgb_state",

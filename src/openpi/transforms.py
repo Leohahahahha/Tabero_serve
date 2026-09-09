@@ -7,6 +7,7 @@ import flax.traverse_util as traverse_util
 import jax
 import numpy as np
 from openpi_client import image_tools
+from scipy.spatial.transform import Rotation
 
 from openpi.models import tokenizer as _tokenizer
 from openpi.shared import array_typing as at
@@ -241,6 +242,54 @@ class AbsoluteActions(DataTransformFn):
         actions[..., :dims] += np.expand_dims(np.where(mask, state[..., :dims], 0), axis=-2)
         data["actions"] = actions
 
+        return data
+
+
+def _pose_state_for_actions(state: np.ndarray, actions: np.ndarray) -> np.ndarray:
+    if state.shape[-1] < 6 or actions.shape[-1] < 6:
+        raise ValueError(f"Pose state/actions need at least 6 dimensions, got {state.shape} and {actions.shape}")
+    if actions.ndim != state.ndim + 1 or actions.shape[:-2] != state.shape[:-1]:
+        raise ValueError(f"Expected actions shape state[..., horizon, dim], got {state.shape} and {actions.shape}")
+    return np.broadcast_to(np.expand_dims(state[..., :6], axis=-2), (*actions.shape[:-1], 6))
+
+
+@dataclasses.dataclass(frozen=True)
+class RelativePoseActions(DataTransformFn):
+    """Convert absolute XYZ/rotvec targets to translation and SO(3) deltas.
+
+    Rotation uses ``R_relative = inverse(R_state) * R_action``. Dimensions
+    after the first six, including the gripper, remain absolute.
+    """
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data:
+            return data
+        state = np.asarray(data["state"])
+        actions = np.asarray(data["actions"]).copy()
+        pose_state = _pose_state_for_actions(state, actions)
+        actions[..., :3] -= pose_state[..., :3]
+        state_rotation = Rotation.from_rotvec(pose_state[..., 3:6].reshape(-1, 3).copy())
+        action_rotation = Rotation.from_rotvec(actions[..., 3:6].reshape(-1, 3))
+        actions[..., 3:6] = (state_rotation.inv() * action_rotation).as_rotvec().reshape(actions.shape[:-1] + (3,))
+        data["actions"] = actions
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
+class AbsolutePoseActions(DataTransformFn):
+    """Invert :class:`RelativePoseActions` into absolute XYZ/rotvec targets."""
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data:
+            return data
+        state = np.asarray(data["state"])
+        actions = np.asarray(data["actions"]).copy()
+        pose_state = _pose_state_for_actions(state, actions)
+        actions[..., :3] += pose_state[..., :3]
+        state_rotation = Rotation.from_rotvec(pose_state[..., 3:6].reshape(-1, 3).copy())
+        relative_rotation = Rotation.from_rotvec(actions[..., 3:6].reshape(-1, 3))
+        actions[..., 3:6] = (state_rotation * relative_rotation).as_rotvec().reshape(actions.shape[:-1] + (3,))
+        data["actions"] = actions
         return data
 
 

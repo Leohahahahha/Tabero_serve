@@ -56,7 +56,7 @@ width_m = 2.0 * action[6]
 另复制训练完成的 step 目录，保留 `params/`、`assets/` 及 checkpoint 元数据。
 部署不需要复制原始数据、视频或训练优化器状态；复制整个 step 目录最省事。
 
-本次已有触觉 LoRA 模型的 step 路径为：
+旧 v1 触觉 LoRA 模型的 step 路径为：
 
 ```text
 /data/yanghaojun/outputs/checkpoints/pi0_lora_tacfield_local_tactile_lora_smoke/real_fr3_recovery_20260903_112020/2999
@@ -64,6 +64,10 @@ width_m = 2.0 * action[6]
 
 服务端参数传 `2999`，不是 `2999/params`。归一化统计从该 step 的
 `assets/local/tabero_lerobot_compact_v1/norm_stats.json` 加载，禁止临时重新计算统计。
+
+v3 + SO(3) 训练得到的 20000 checkpoint 必须使用配置`pi0_lora_tabero_v3_touch_20k`，其统计位于
+`assets/local/tabero_lerobot_compact_v3/norm_stats.json`。不能将 v1 配置和 v3 checkpoint 混用；
+服务端会输出配置期望的`asset_id`和 checkpoint 实际包含的`asset_id`后退出。
 
 `examples/fr3_deploy/tabero_conversion.json` 是当前训练数据转换元数据的原样副本，
 包含裁剪、触觉网格、单位及数据来源。模型与客户端都读取此文件，并检查 SHA256 一致。
@@ -86,7 +90,7 @@ width_m = 2.0 * action[6]
 uv sync --frozen
 ```
 
-以下路径 `/path/to/...` 按新主机实际路径替换；选择一张空闲 GPU：
+以下路径 `/path/to/...` 按新主机实际路径替换；选择一张空闲 GPU。旧 v1 checkpoint 2999 使用：
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 XLA_PYTHON_CLIENT_PREALLOCATE=false OPENPI_DATA_HOME=/path/to/openpi-cache .venv/bin/python scripts/serve_tabero.py --config pi0_lora_tacfield_local_tactile_lora_smoke --checkpoint /path/to/2999 --conversion examples/fr3_deploy/tabero_conversion.json --host 0.0.0.0 --port 8000
@@ -95,6 +99,15 @@ CUDA_VISIBLE_DEVICES=0 XLA_PYTHON_CLIENT_PREALLOCATE=false OPENPI_DATA_HOME=/pat
 该配置匹配当前 rank-16 触觉 LoRA checkpoint；不要换成发布版基础配置。
 脚本严格校验参数树，缺失或多余权重不会自动随机补齐或忽略。
 WebSocket 复用项目现有服务协议，没有认证或 TLS；绑定 `0.0.0.0` 的示例用于受控局域网。
+
+v3 checkpoint 20000 使用对应的 v3 配置。若已复制到`/home/enine/tabero_deploy/checkpoints/20000`：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 XLA_PYTHON_CLIENT_PREALLOCATE=false taskset -c 8-15 .venv/bin/python scripts/serve_tabero.py --config pi0_lora_tabero_v3_touch_20k --checkpoint /home/enine/tabero_deploy/checkpoints/20000 --conversion examples/fr3_deploy/tabero_conversion.json --host 127.0.0.1 --port 8000
+```
+
+启动日志的`Deployment metadata`应同时包含`config: pi0_lora_tabero_v3_touch_20k`、
+`asset_id: local/tabero_lerobot_compact_v3`和 checkpoint 20000 的路径，然后才表示配置与统计目录匹配。
 
 若部署另行训练完成的 RGB+state 基线，改用 `--config pi0_lora_tabero_rgb_state`
 及该基线自己的 checkpoint，并在机器人端加 `--no-tactile`。这不是把触觉模型的输入置零。

@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from scipy.spatial.transform import Rotation
 
 import openpi.models.tokenizer as _tokenizer
 import openpi.transforms as _transforms
@@ -60,6 +61,39 @@ def test_absolute_actions_noop():
     del item["actions"]
     transform = _transforms.AbsoluteActions(mask=[True, False])
     assert transform(item) is item
+
+
+def test_relative_pose_actions_use_so3_shortest_rotation_and_round_trip():
+    state = np.array([0.4, -0.1, 0.3, np.pi - 0.01, 0.0, 0.0, 0.02])
+    actions = np.tile(state, (3, 1))
+    actions[:, :3] += np.array([[0.001, 0.0, 0.0], [0.0, -0.002, 0.0], [0.0, 0.0, 0.003]])
+    actions[:, 3] = -np.pi + 0.01
+    actions[:, 6] = [0.01, 0.02, 0.03]
+    original = actions.copy()
+
+    relative = _transforms.RelativePoseActions()({"state": state.copy(), "actions": actions})
+    np.testing.assert_allclose(relative["actions"][:, :3], original[:, :3] - state[:3], atol=1e-12)
+    np.testing.assert_allclose(np.linalg.norm(relative["actions"][:, 3:6], axis=-1), 0.02, atol=1e-12)
+    np.testing.assert_array_equal(relative["actions"][:, 6], original[:, 6])
+
+    restored = _transforms.AbsolutePoseActions()(relative)
+    np.testing.assert_allclose(restored["actions"][:, :3], original[:, :3], atol=1e-12)
+    np.testing.assert_allclose(
+        Rotation.from_rotvec(restored["actions"][:, 3:6]).as_matrix(),
+        Rotation.from_rotvec(original[:, 3:6]).as_matrix(),
+        atol=1e-12,
+    )
+    np.testing.assert_array_equal(restored["actions"][:, 6], original[:, 6])
+
+
+def test_relative_pose_actions_support_batched_statistics_shape():
+    state = np.zeros((2, 7))
+    actions = np.zeros((2, 4, 7))
+    actions[0, :, 3] = -np.pi + 0.01
+    state[0, 3] = np.pi - 0.01
+    result = _transforms.RelativePoseActions()({"state": state, "actions": actions})["actions"]
+    assert result.shape == (2, 4, 7)
+    np.testing.assert_allclose(np.linalg.norm(result[0, :, 3:6], axis=-1), 0.02, atol=1e-12)
 
 
 def test_make_bool_mask():

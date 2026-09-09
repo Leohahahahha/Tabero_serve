@@ -74,6 +74,10 @@ The guide includes a frozen-tactile baseline and an opt-in **backbone + tactile 
 variant for DM-Tac sensor adaptation; training and model evaluation remain user-operated.
 For a separately trained RGB+state-only baseline and paired offline comparison, see
 [the no-tactile retraining guide](docs/tabero_rgb_state_baseline.md).
+For the v3 next-state labels, fresh published-Tabero initialization, 20k tactile-LoRA
+schedule, and W&B handoff, see [the v3 tactile 20k guide](docs/tabero_v3_touch_20k.md).
+For a dated engineering retrospective covering data, training, evaluation, and
+real-robot deployment incidents, see [the interview incident log](docs/tabero_interview_incident_log.md).
 The original example below starts from the base model and is not that configuration.
 
 Using `pi0_lora_tacfield_tabero` as an example (two image streams + tactile force field + 13D joint action/force prediction), training has three steps:
