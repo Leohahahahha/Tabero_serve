@@ -2,7 +2,6 @@
 
 from collections import deque
 from dataclasses import dataclass
-import math
 
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -12,6 +11,8 @@ TACTILE_INPUT = "rolling_9x198x2_marker_coordinates_left_then_right"
 TACTILE_MARKER_SHAPE = (9, 198, 2)
 TACTILE_MARKER_DTYPE = np.dtype(np.float32)
 TACTILE_MARKER_LAYOUT = "reference_then_8_history_frames_left_then_right"
+SINGLE_FINGER_MIN_M = 0.0
+SINGLE_FINGER_MAX_M = 0.0425
 
 
 def finite(value, shape, name):
@@ -33,7 +34,7 @@ def pose_to_state(pose, width):
 
 def action_to_http(action):
     action = finite(action, (7,), "absolute model action")
-    if not 0 <= action[6] <= 0.0425001:
+    if not SINGLE_FINGER_MIN_M <= action[6] <= SINGLE_FINGER_MAX_M + 1e-7:
         raise ValueError("Predicted single-finger position outside [0,0.0425] m")
     return np.concatenate([action[:3], Rotation.from_rotvec(action[3:6]).as_quat()]), float(2 * action[6])
 
@@ -219,13 +220,6 @@ class Chunk:
     observation_time: float
     observation_state: np.ndarray
 
-    def select(self, now, max_steps):
-        age = now - self.observation_time
-        index = math.floor(age * 10 + 1e-7)
-        if index < 0 or index >= min(max_steps, len(self.actions)):
-            raise ValueError(f"Action chunk expired: observation age={age:.3f}s, index={index}")
-        return self.actions[index], index
-
 
 def action_distance_metrics(left, right):
     """Physical differences between two absolute FR3 action/state vectors."""
@@ -260,8 +254,16 @@ def validate_sensor_timing(stamps, now, max_age, max_skew):
         )
 
 
+def sensor_stamps(frames, keys):
+    """Extract required stream stamps with an actionable startup error."""
+    missing = [key for key in keys if key not in frames]
+    if missing:
+        raise ValueError(f"Waiting for sensor streams: missing={missing}")
+    return {key: frames[key][1] for key in keys}
+
+
 class TargetGuard:
-    """Reject large errors, then limit small target changes in physical units."""
+    """Saturate finite predictions while rejecting faults in measured robot state."""
 
     def __init__(self, limits, initial_state):
         self.limits = limits
@@ -283,6 +285,8 @@ class TargetGuard:
         self.last = finite(initial_state, (7,), "initial state").copy()
         self.check_workspace(self.last)
         action_to_http(self.last)
+        self.last_bounded_target = self.last.copy()
+        self.last_limits_applied = ()
 
     def check_workspace(self, action):
         if np.any(action[:3] < self.low) or np.any(action[:3] > self.high):
@@ -291,9 +295,8 @@ class TargetGuard:
     def prepare(self, target, measured, dt=0.1):
         target = finite(target, (7,), "target")
         measured = finite(measured, (7,), "measured state")
-        action_to_http(target)  # Reject physically invalid gripper predictions before rate limiting.
-        self.check_workspace(target)
         self.check_workspace(measured)
+        action_to_http(measured)
         limits = self.limits
         r_measured = Rotation.from_rotvec(measured[3:6])
         r_last = Rotation.from_rotvec(self.last[3:6])
@@ -302,20 +305,56 @@ class TargetGuard:
             raise ValueError("Robot is not tracking the commanded position")
         if (r_measured.inv() * r_last).magnitude() > limits["max_tracking_rotation_rad"]:
             raise ValueError("Robot is not tracking the commanded orientation")
-        if np.linalg.norm(target[:3] - measured[:3]) > limits["max_target_distance_m"]:
-            raise ValueError("Predicted position jump exceeds max_target_distance_m")
-        if (r_measured.inv() * r_target).magnitude() > limits["max_target_rotation_rad"]:
-            raise ValueError("Predicted rotation jump exceeds max_target_rotation_rad")
+
+        applied = []
+        bounded = target.copy()
+
+        workspace_xyz = np.clip(bounded[:3], self.low, self.high)
+        if not np.array_equal(workspace_xyz, bounded[:3]):
+            applied.append("workspace")
+            bounded[:3] = workspace_xyz
+
+        target_delta = bounded[:3] - measured[:3]
+        target_distance = np.linalg.norm(target_delta)
+        if target_distance > limits["max_target_distance_m"]:
+            applied.append("max_target_distance_m")
+            bounded[:3] = measured[:3] + target_delta * limits["max_target_distance_m"] / target_distance
+
+        target_rotation_delta = (r_measured.inv() * r_target).as_rotvec()
+        target_rotation_distance = np.linalg.norm(target_rotation_delta)
+        if target_rotation_distance > limits["max_target_rotation_rad"]:
+            applied.append("max_target_rotation_rad")
+            target_rotation_delta *= limits["max_target_rotation_rad"] / target_rotation_distance
+        bounded[3:6] = (r_measured * Rotation.from_rotvec(target_rotation_delta)).as_rotvec()
+
+        bounded_finger = np.clip(target[6], SINGLE_FINGER_MIN_M, SINGLE_FINGER_MAX_M)
+        if bounded_finger != target[6]:
+            applied.append("gripper_position_m")
+        bounded[6] = bounded_finger
+
         dt = min(max(dt, 0.0), 0.1)  # A delayed tick cannot create a large catch-up step.
-        result = target.copy()
-        dp = target[:3] - self.last[:3]
-        dp *= min(1.0, limits["max_translation_m_s"] * dt / max(np.linalg.norm(dp), 1e-12))
+        result = bounded.copy()
+        dp = bounded[:3] - self.last[:3]
+        translation_step = limits["max_translation_m_s"] * dt
+        if np.linalg.norm(dp) > translation_step:
+            applied.append("max_translation_m_s")
+        dp *= min(1.0, translation_step / max(np.linalg.norm(dp), 1e-12))
         result[:3] = self.last[:3] + dp
-        dr = (r_last.inv() * r_target).as_rotvec()
-        dr *= min(1.0, limits["max_rotation_rad_s"] * dt / max(np.linalg.norm(dr), 1e-12))
+        r_bounded = Rotation.from_rotvec(bounded[3:6])
+        dr = (r_last.inv() * r_bounded).as_rotvec()
+        rotation_step = limits["max_rotation_rad_s"] * dt
+        if np.linalg.norm(dr) > rotation_step:
+            applied.append("max_rotation_rad_s")
+        dr *= min(1.0, rotation_step / max(np.linalg.norm(dr), 1e-12))
         result[3:6] = (r_last * Rotation.from_rotvec(dr)).as_rotvec()
         finger_step = 0.5 * limits["max_gripper_width_m_s"] * dt
-        result[6] = np.clip(target[6], self.last[6] - finger_step, self.last[6] + finger_step)
+        if abs(bounded[6] - self.last[6]) > finger_step:
+            applied.append("max_gripper_width_m_s")
+        result[6] = np.clip(bounded[6], self.last[6] - finger_step, self.last[6] + finger_step)
+        self.check_workspace(result)
+        action_to_http(result)
+        self.last_bounded_target = bounded
+        self.last_limits_applied = tuple(applied)
         return result
 
     def commit(self, command):

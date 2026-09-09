@@ -2,7 +2,6 @@
 """ROS2 FR3 client. Defaults to shadow mode; --execute enables HTTP commands."""
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import logging
@@ -36,14 +35,10 @@ def load_config(path, *, robot_url=None, policy_url=None):
         "max_sensor_skew_sec",
         "enable_timeout_sec",
         "max_result_age_sec",
-        "max_tick_delay_sec",
+        "control_period_sec",
     ):
         if not np.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be finite and positive")
-    if not isinstance(config["max_chunk_steps"], int) or not 1 <= config["max_chunk_steps"] <= 10:
-        raise ValueError("max_chunk_steps must be an integer in [1,10]")
-    if config["max_result_age_sec"] >= 0.1 * config["max_chunk_steps"]:
-        raise ValueError("max_result_age_sec must be less than the executable chunk duration")
     if config["tactile_format"] not in ("packed", "shear"):
         raise ValueError("tactile_format must be packed or shear")
     if not isinstance(config["prompt"], str) or not config["prompt"].strip():
@@ -76,7 +71,7 @@ def wait_ready(source, stopped):
 
 
 def control_loop(source, policy, robot, config, *, execute, duration, stopped, log):
-    """All commands belong to this one loop. Inference runs independently of the 10 Hz clock."""
+    """Run one blocking inference per observation and execute only action[0]."""
     initial = wait_ready(source, stopped)
     logging.info("Warming up model (no robot commands); first compilation can take up to 120 seconds")
     policy.infer(initial, warmup=True)  # Discard warmup output and its stale observation.
@@ -89,94 +84,86 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                 raise InterruptedError("No fresh enable heartbeat after warmup")
         source.arm()
     guard = TargetGuard(config["limits"], source.measured_state())
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tabero-inference")
-    future = None
-    chunk = None
     started = time.monotonic()
-    next_tick = started
+    next_cycle = started
     last_command_time = None
     last_width = 2 * guard.last[6]
     commands_sent = False
     count = 0
     chunk_id = 0
-    active_chunk_id = None
     previous_prediction = None
-    previous_chunk_id = None
     try:
         while not stopped.is_set() and time.monotonic() - started < duration:
             now = time.monotonic()
-            if now < next_tick:
-                stopped.wait(min(0.01, next_tick - now))
-                # Deadman loss is noticed between ticks as well.
+            if now < next_cycle:
+                stopped.wait(min(0.01, next_cycle - now))
                 if execute and not source.enable_is_fresh(warmup_done):
                     raise RuntimeError("Enable heartbeat released or expired")
                 continue
-            if now - next_tick > config["max_tick_delay_sec"]:
-                raise RuntimeError("Control loop deadline missed; refusing catch-up commands")
-            next_tick = now + 0.1
+            cycle_started = now
+            next_cycle = cycle_started + config["control_period_sec"]
             sample = source.snapshot()
             if execute and not source.enable_is_fresh(warmup_done):
                 raise RuntimeError("Enable heartbeat released or expired")
-            if future is not None and future.done():
-                candidate = future.result()
-                future = None
-                candidate_age = now - candidate.observation_time
-                chunk_id += 1
-                accepted = candidate_age <= config["max_result_age_sec"]
-                log.write(
-                    json.dumps(
-                        {
-                            "event": "inference_chunk",
-                            "wall_time": time.time(),
-                            "mode": "execute" if execute else "shadow",
-                            "chunk_id": chunk_id,
-                            "accepted": accepted,
-                            "observation_age_sec_at_accept": candidate_age,
-                            "observation_state": candidate.observation_state.tolist(),
-                            "actions": candidate.actions.tolist(),
-                        }
-                    )
-                    + "\n"
+
+            inference_started = time.monotonic()
+            chunk = policy.infer(sample)
+            inference_finished = time.monotonic()
+            inference_latency = inference_finished - inference_started
+            result_age = inference_finished - chunk.observation_time
+            chunk_id += 1
+            accepted = result_age <= config["max_result_age_sec"]
+            log.write(
+                json.dumps(
+                    {
+                        "event": "inference_chunk",
+                        "wall_time": time.time(),
+                        "mode": "execute" if execute else "shadow",
+                        "synchronous": True,
+                        "chunk_id": chunk_id,
+                        "accepted": accepted,
+                        "inference_latency_sec": inference_latency,
+                        "observation_age_sec_at_accept": result_age,
+                        "selected_action_index": 0,
+                        "observation_state": chunk.observation_state.tolist(),
+                        "actions": chunk.actions.tolist(),
+                    }
                 )
-                log.flush()
-                if not accepted:
-                    raise RuntimeError("Inference result too old; refusing stale targets")
-                chunk = candidate
-                active_chunk_id = chunk_id
-            if future is None:
-                future = pool.submit(policy.infer, sample)
-            if chunk is None:
-                if now - started > config["max_result_age_sec"] + 0.1:
-                    raise RuntimeError("First runtime inference missed its deadline")
-                continue
-            raw, index = chunk.select(now, config["max_chunk_steps"])
+                + "\n"
+            )
+            log.flush()
+            if not accepted:
+                raise RuntimeError("Inference result too old; refusing stale target")
+            if stopped.is_set() or time.monotonic() - started >= duration:
+                break
+            if execute and not source.enable_is_fresh(warmup_done):
+                raise RuntimeError("Enable heartbeat released or expired during inference")
+
+            raw = chunk.actions[0]
             measured = source.measured_state()
-            action0 = chunk.actions[0]
-            dt = 0.1 if last_command_time is None else min(0.1, now - last_command_time)
+            now = time.monotonic()
+            dt = config["control_period_sec"] if last_command_time is None else now - last_command_time
             record = {
                 "event": "control_tick",
                 "wall_time": time.time(),
                 "mode": "execute" if execute else "shadow",
-                "chunk_id": active_chunk_id,
+                "synchronous": True,
+                "chunk_id": chunk_id,
                 "observation_age_sec": now - chunk.observation_time,
-                "chunk_index": index,
+                "inference_latency_sec": inference_latency,
+                "chunk_index": 0,
                 "observation_state": chunk.observation_state.tolist(),
                 "measured": measured.tolist(),
-                "action0": action0.tolist(),
+                "action0": raw.tolist(),
                 "prediction": raw.tolist(),
                 "distances": {
-                    "action0_vs_observation": action_distance_metrics(action0, chunk.observation_state),
-                    "action0_vs_current": action_distance_metrics(action0, measured),
-                    "selected_vs_current": action_distance_metrics(raw, measured),
-                    "selected_vs_action0": action_distance_metrics(raw, action0),
+                    "action0_vs_observation": action_distance_metrics(raw, chunk.observation_state),
+                    "action0_vs_current": action_distance_metrics(raw, measured),
                     "current_vs_observation": action_distance_metrics(measured, chunk.observation_state),
-                    "selected_vs_previous_tick": (
+                    "action0_vs_previous_tick": (
                         None if previous_prediction is None else action_distance_metrics(raw, previous_prediction)
                     ),
                 },
-                "chunk_switched_since_previous_tick": (
-                    previous_chunk_id is not None and active_chunk_id != previous_chunk_id
-                ),
                 "pose_sent": False,
                 "gripper_sent": False,
             }
@@ -185,7 +172,16 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
             try:
                 command = guard.prepare(raw, measured, dt)
                 pose, width = action_to_http(command)
-                record.update(limited_action=command.tolist(), pose_xyz_xyzw=pose.tolist(), gripper_width_m=width)
+                record.update(
+                    bounded_prediction=guard.last_bounded_target.tolist(),
+                    limited_action=command.tolist(),
+                    limits_applied=list(guard.last_limits_applied),
+                    saturated=bool(guard.last_limits_applied),
+                    pose_xyz_xyzw=pose.tolist(),
+                    gripper_width_m=width,
+                )
+                record["distances"]["bounded_vs_current"] = action_distance_metrics(guard.last_bounded_target, measured)
+                record["distances"]["limited_vs_current"] = action_distance_metrics(command, measured)
                 if execute:
                     # Mark BEFORE sending: a timed-out request might already have moved the robot.
                     commands_sent = True
@@ -216,15 +212,14 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                 log.write(json.dumps(record) + "\n")
                 log.flush()
             previous_prediction = raw.copy()
-            previous_chunk_id = active_chunk_id
             count += 1
-            if count % 10 == 0:
+            if count % 5 == 0:
                 logging.info(
-                    "%s: %d ticks, action[%d], age %.0f ms",
+                    "%s synchronous: %d inferences, action[0], latency %.0f ms, limits=%s",
                     record["mode"],
                     count,
-                    index,
-                    1000 * record["observation_age_sec"],
+                    1000 * inference_latency,
+                    record["limits_applied"],
                 )
     finally:
         # No automatic reset, clearerr, gripper open/close, or retry on failure.
@@ -237,7 +232,6 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
             except Exception:
                 logging.exception("Hold request failed; use the robot's hardware stop")
         policy.close()
-        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def main():
@@ -270,6 +264,8 @@ def main():
                 {
                     "event": "start",
                     "execute": args.execute,
+                    "control_mode": "synchronous_action0",
+                    "prediction_limit_mode": "saturate",
                     "config": config,
                     "conversion_sha256": hashlib.sha256(conversion_bytes).hexdigest(),
                 }

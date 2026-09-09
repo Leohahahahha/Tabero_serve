@@ -63,23 +63,85 @@ def test_rotation_branch_and_rate_limits(config):
     assert command[6] - measured[6] == pytest.approx(0.001)
     relative = Rotation.from_rotvec(measured[3:6]).inv() * Rotation.from_rotvec(command[3:6])
     assert relative.magnitude() <= 0.0100001
+    assert set(guard.last_limits_applied) == {
+        "max_translation_m_s",
+        "max_rotation_rad_s",
+        "max_gripper_width_m_s",
+    }
     np.testing.assert_array_equal(guard.last, measured)  # Must not commit before HTTP success.
 
 
-@pytest.mark.parametrize("kind", ["workspace", "translation", "rotation", "tracking"])
-def test_reject_unsafe_targets(config, kind):
-    measured, target = state(), state()
+def test_saturates_workspace_target_distance_rotation_and_gripper(config):
+    measured = state()
+    measured[0] = 0.74
+    target = measured.copy()
+    target[:3] = [0.90, -0.50, 0.60]
+    target[3:6] = (Rotation.from_rotvec(measured[3:6]) * Rotation.from_rotvec([1, 0, 0])).as_rotvec()
+    target[6] = 0.10
     guard = core.TargetGuard(config["limits"], measured)
-    if kind == "workspace":
-        target[2] = 0.01
-    elif kind == "translation":
-        target[0] += 0.06
-    elif kind == "rotation":
-        target[3] += 1
-    else:
-        measured[0] -= 0.04
-    with pytest.raises(ValueError, match="workspace|jump|tracking"):
-        guard.prepare(target, measured)
+    command = guard.prepare(target, measured)
+    bounded = guard.last_bounded_target
+
+    assert np.all(bounded[:3] >= guard.low)
+    assert np.all(bounded[:3] <= guard.high)
+    assert np.linalg.norm(bounded[:3] - measured[:3]) <= config["limits"]["max_target_distance_m"] + 1e-12
+    rotation = Rotation.from_rotvec(measured[3:6]).inv() * Rotation.from_rotvec(bounded[3:6])
+    assert rotation.magnitude() == pytest.approx(config["limits"]["max_target_rotation_rad"])
+    assert bounded[6] == pytest.approx(core.SINGLE_FINGER_MAX_M)
+    assert set(guard.last_limits_applied) == {
+        "workspace",
+        "max_target_distance_m",
+        "max_target_rotation_rad",
+        "gripper_position_m",
+        "max_translation_m_s",
+        "max_rotation_rad_s",
+        "max_gripper_width_m_s",
+    }
+    assert np.linalg.norm(command[:3] - measured[:3]) == pytest.approx(0.002)
+
+
+def test_individual_prediction_bounds_saturate_to_exact_limits(config):
+    measured = state()
+
+    workspace_measured = measured.copy()
+    workspace_measured[0] = 0.74
+    workspace_guard = core.TargetGuard(config["limits"], workspace_measured)
+    workspace_target = workspace_measured.copy()
+    workspace_target[0] = 0.76
+    workspace_guard.prepare(workspace_target, workspace_measured)
+    assert workspace_guard.last_bounded_target[0] == pytest.approx(0.75)
+    assert "workspace" in workspace_guard.last_limits_applied
+
+    distance_guard = core.TargetGuard(config["limits"], measured)
+    distance_target = measured.copy()
+    distance_target[0] += 0.10
+    distance_guard.prepare(distance_target, measured)
+    assert distance_guard.last_bounded_target[0] - measured[0] == pytest.approx(0.05)
+
+    for predicted, expected in ((-0.01, core.SINGLE_FINGER_MIN_M), (0.05, core.SINGLE_FINGER_MAX_M)):
+        gripper_guard = core.TargetGuard(config["limits"], measured)
+        gripper_target = measured.copy()
+        gripper_target[6] = predicted
+        gripper_guard.prepare(gripper_target, measured)
+        assert gripper_guard.last_bounded_target[6] == pytest.approx(expected)
+        assert "gripper_position_m" in gripper_guard.last_limits_applied
+
+
+def test_tracking_faults_still_stop_instead_of_rewriting_measurement(config):
+    initial = state()
+    guard = core.TargetGuard(config["limits"], initial)
+    measured = initial.copy()
+    measured[0] -= 0.04
+    with pytest.raises(ValueError, match="tracking"):
+        guard.prepare(initial, measured)
+
+
+@pytest.mark.parametrize("invalid", [np.nan, np.inf, -np.inf])
+def test_nonfinite_predictions_still_rejected(config, invalid):
+    target = state()
+    target[0] = invalid
+    with pytest.raises(ValueError, match="finite"):
+        core.TargetGuard(config["limits"], state()).prepare(target, state())
 
 
 def test_marker_grid_history_and_left_right_order():
@@ -194,14 +256,6 @@ def test_training_crop_and_conversion():
         core.crop_front(rgb[:520], conversion)
 
 
-def test_chunk_discards_elapsed_actions_and_expires():
-    chunk = core.Chunk(np.repeat(state()[None], 50, axis=0), 10.0, state())
-    _, index = chunk.select(10.245, 5)
-    assert index == 2
-    with pytest.raises(ValueError, match="expired"):
-        chunk.select(10.51, 5)
-
-
 def test_action_distance_metrics_uses_so3_shortest_angle():
     left = state()
     right = left.copy()
@@ -221,6 +275,12 @@ def test_sensor_timing_error_identifies_oldest_and_newest_streams():
         core.validate_sensor_timing({"front": 9.80, "wrist": 9.90, "state": 9.92}, 10.0, 0.25, 0.1)
     with pytest.raises(ValueError, match=r"Stale sensor stream: oldest=left"):
         core.validate_sensor_timing({"left": 9.70, "right": 9.71}, 10.0, 0.25, 0.1)
+
+
+def test_missing_sensor_error_lists_all_missing_streams():
+    frames = {"front": (None, 1.0), "state": (None, 1.0)}
+    with pytest.raises(ValueError, match=r"missing=\['wrist', 'left', 'right'\]"):
+        core.sensor_stamps(frames, ("front", "wrist", "state", "left", "right"))
 
 
 def test_server_contract_rejects_wrong_modalities_or_conversion():
@@ -320,6 +380,8 @@ def controller_fixture(
 
     class Policy:
         def infer(self, sample, *, warmup=False):
+            if not warmup:
+                clock.now += latency
             actions = np.repeat(sample.data["state"][None], 50, axis=0)
             actions[:, 0] += 0.0001 * np.arange(50)
             actions[:, 6] += 0.001
@@ -344,20 +406,7 @@ def controller_fixture(
         def read_state(self, max_age):
             return measured.copy(), clock.now
 
-    class Pool:
-        def __init__(self, **kwargs):
-            pass
-
-        def submit(self, fn, sample):
-            output = fn(sample)
-            ready = clock.now + latency
-            return SimpleNamespace(done=lambda: clock.now >= ready, result=lambda: output)
-
-        def shutdown(self, **kwargs):
-            pass
-
     monkeypatch.setattr(run, "time", clock)
-    monkeypatch.setattr(run, "ThreadPoolExecutor", Pool)
     log = io.StringIO()
 
     def execute(*, live):
@@ -366,7 +415,7 @@ def controller_fixture(
     return execute, records, log
 
 
-def test_shadow_makes_no_robot_writes_and_uses_delayed_index(monkeypatch, config):
+def test_shadow_makes_no_robot_writes_and_synchronously_uses_action_zero(monkeypatch, config):
     execute, records, log = controller_fixture(monkeypatch, config)
     execute(live=False)
     assert records == []
@@ -375,27 +424,28 @@ def test_shadow_makes_no_robot_writes_and_uses_delayed_index(monkeypatch, config
     ticks = [row for row in rows if row["event"] == "control_tick"]
     assert all(len(row["actions"]) == 50 for row in chunks)
     assert len({row["chunk_id"] for row in chunks}) == len(chunks)
-    assert ticks[0]["chunk_index"] == 2
-    assert ticks[0]["observation_age_sec"] == pytest.approx(0.2)
+    assert ticks[0]["synchronous"] is True
+    assert ticks[0]["chunk_index"] == 0
+    assert ticks[0]["inference_latency_sec"] == pytest.approx(0.145)
+    assert ticks[0]["observation_age_sec"] == pytest.approx(0.145)
     expected_action0 = state()
     expected_action0[6] += 0.001
     assert ticks[0]["action0"] == pytest.approx(expected_action0.tolist())
     assert ticks[0]["distances"]["action0_vs_observation"]["position_m"] == pytest.approx(0)
-    assert ticks[0]["distances"]["selected_vs_current"]["position_m"] == pytest.approx(0.0002)
-    assert ticks[0]["distances"]["selected_vs_action0"]["position_m"] == pytest.approx(0.0002)
+    assert ticks[0]["prediction"] == pytest.approx(expected_action0.tolist())
     assert ticks[0]["distances"]["current_vs_observation"]["position_m"] == pytest.approx(0)
-    assert ticks[0]["distances"]["selected_vs_previous_tick"] is None
-    assert ticks[0]["chunk_switched_since_previous_tick"] is False
+    assert ticks[0]["distances"]["action0_vs_previous_tick"] is None
 
 
-def test_shadow_records_rejected_predictions_without_writes(monkeypatch, config):
+def test_shadow_records_saturated_predictions_without_writes(monkeypatch, config):
     execute, records, log = controller_fixture(monkeypatch, config, invalid=True)
     execute(live=False)
     assert records == []
     rows = [json.loads(line) for line in log.getvalue().splitlines()]
     ticks = [row for row in rows if row["event"] == "control_tick"]
     assert len(ticks) >= 2
-    assert all(not row["ok"] for row in ticks)
+    assert all(row["ok"] and row["saturated"] for row in ticks)
+    assert all("max_target_distance_m" in row["limits_applied"] for row in ticks)
 
 
 def test_live_splits_pose_and_width_then_holds_on_exit(monkeypatch, config):
@@ -424,13 +474,16 @@ def test_late_inference_never_actuates(monkeypatch, config):
     assert records == []
 
 
-def test_invalid_first_target_never_actuates(monkeypatch, config):
+def test_large_finite_first_target_is_saturated_before_actuation(monkeypatch, config):
     execute, records, log = controller_fixture(monkeypatch, config, invalid=True)
-    with pytest.raises(ValueError, match="jump"):
-        execute(live=True)
-    assert records == []
+    execute(live=True)
+    assert records[0][0] == "pose"
     rows = [json.loads(row) for row in log.getvalue().splitlines()]
-    assert not next(row for row in rows if row["event"] == "control_tick")["ok"]
+    tick = next(row for row in rows if row["event"] == "control_tick")
+    assert tick["ok"]
+    assert tick["saturated"]
+    assert "max_target_distance_m" in tick["limits_applied"]
+    assert tick["limited_action"][0] - tick["measured"][0] == pytest.approx(0.002)
 
 
 def test_partial_http_failure_is_not_retried(monkeypatch, config):

@@ -9,6 +9,7 @@ from core import Sample
 from core import crop_front
 from core import decode_image
 from core import decode_packed_shear
+from core import sensor_stamps
 from core import validate_sensor_timing
 from core import validate_tactile_marker_motion
 import cv2
@@ -160,7 +161,7 @@ class LiveObservations:
                 with self.lock:
                     frames = self.frames.copy()
                 keys = ("front", "wrist", "state", *(("left", "right") if self.use_tactile else ()))
-                stamps = {key: frames[key][1] for key in keys}
+                stamps = sensor_stamps(frames, keys)
                 validate_sensor_timing(
                     stamps,
                     time.time(),
