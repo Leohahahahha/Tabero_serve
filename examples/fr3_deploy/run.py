@@ -39,6 +39,12 @@ def load_config(path, *, robot_url=None, policy_url=None):
     ):
         if not np.isfinite(config[key]) or config[key] <= 0:
             raise ValueError(f"{key} must be finite and positive")
+    if (
+        isinstance(config["actions_per_inference"], bool)
+        or not isinstance(config["actions_per_inference"], int)
+        or not 1 <= config["actions_per_inference"] <= 2
+    ):
+        raise ValueError("actions_per_inference must be an integer in [1, 2]")
     if config["tactile_format"] not in ("packed", "shear"):
         raise ValueError("tactile_format must be packed or shear")
     if not isinstance(config["prompt"], str) or not config["prompt"].strip():
@@ -71,7 +77,7 @@ def wait_ready(source, stopped):
 
 
 def control_loop(source, policy, robot, config, *, execute, duration, stopped, log):
-    """Run one blocking inference per observation and execute only action[0]."""
+    """Run blocking inference, then execute a bounded action prefix at 10 Hz."""
     initial = wait_ready(source, stopped)
     logging.info("Warming up model (no robot commands); first compilation can take up to 120 seconds")
     policy.infer(initial, warmup=True)  # Discard warmup output and its stale observation.
@@ -95,6 +101,7 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
     count = 0
     chunk_id = 0
     previous_prediction = None
+    previous_action0 = None
     try:
         while not stopped.is_set() and time.monotonic() - started < duration:
             now = time.monotonic()
@@ -128,6 +135,8 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                         "inference_latency_sec": inference_latency,
                         "observation_age_sec_at_accept": result_age,
                         "selected_action_index": 0,
+                        "requested_action_indices": list(range(config["actions_per_inference"])),
+                        "requested_action_steps": config["actions_per_inference"],
                         "observation_state": chunk.observation_state.tolist(),
                         "actions": chunk.actions.tolist(),
                     }
@@ -142,89 +151,133 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
             if execute and not source.enable_is_fresh(warmup_done):
                 raise RuntimeError("Enable heartbeat released or expired during inference")
 
-            raw = chunk.actions[0]
-            measured = source.measured_state()
-            now = time.monotonic()
-            dt = config["control_period_sec"] if last_command_time is None else now - last_command_time
-            record = {
-                "event": "control_tick",
-                "wall_time": time.time(),
-                "mode": "execute" if execute else "shadow",
-                "synchronous": True,
-                "chunk_id": chunk_id,
-                "observation_age_sec": now - chunk.observation_time,
-                "inference_latency_sec": inference_latency,
-                "chunk_index": 0,
-                "observation_state": chunk.observation_state.tolist(),
-                "measured": measured.tolist(),
-                "action0": raw.tolist(),
-                "prediction": raw.tolist(),
-                "distances": {
-                    "action0_vs_observation": action_distance_metrics(raw, chunk.observation_state),
-                    "action0_vs_current": action_distance_metrics(raw, measured),
-                    "current_vs_observation": action_distance_metrics(measured, chunk.observation_state),
-                    "action0_vs_previous_tick": (
-                        None if previous_prediction is None else action_distance_metrics(raw, previous_prediction)
-                    ),
-                },
-                "pose_sent": False,
-                "gripper_sent": False,
-            }
-            if "tactile_marker_motion" in sample.data:
-                record["tactile_marker"] = tactile_marker_summary(sample.data["tactile_marker_motion"])
-            try:
-                command = guard.prepare(raw, measured, dt)
-                pose, width = action_to_http(command)
-                record.update(
-                    bounded_prediction=guard.last_bounded_target.tolist(),
-                    limited_action=command.tolist(),
-                    limits_applied=list(guard.last_limits_applied),
-                    saturated=bool(guard.last_limits_applied),
-                    pose_xyz_xyzw=pose.tolist(),
-                    gripper_width_m=width,
-                )
-                record["distances"]["bounded_vs_current"] = action_distance_metrics(guard.last_bounded_target, measured)
-                record["distances"]["limited_vs_current"] = action_distance_metrics(command, measured)
-                if execute:
-                    # Mark BEFORE sending: a timed-out request might already have moved the robot.
-                    commands_sent = True
-                    robot.command_pose(pose)
-                    pose_commands_sent += 1
-                    record["pose_sent"] = True
-                    if abs(width - last_width) > 0.0001:
-                        if stopped.is_set() or not source.enable_is_fresh(warmup_done):
-                            raise RuntimeError("Enable lost between pose and gripper commands")
-                        robot.command_width(width)
-                        gripper_commands_sent += 1
-                        record["gripper_sent"] = True
-                        last_width = width
-                    guard.commit(command)
-                    last_command_time = now
-                else:
-                    # Shadow mode has no simulated actuator; each prediction is checked against real state.
+            action0 = chunk.actions[0]
+            first_action_time = inference_finished
+            for chunk_index, raw in enumerate(chunk.actions[: config["actions_per_inference"]]):
+                scheduled = first_action_time + chunk_index * config["control_period_sec"]
+                while time.monotonic() < scheduled and not stopped.is_set():
+                    if execute and not source.enable_is_fresh(warmup_done):
+                        raise RuntimeError("Enable heartbeat released or expired between chunk actions")
+                    stopped.wait(min(0.01, scheduled - time.monotonic()))
+                now = time.monotonic()
+                if stopped.is_set() or now - started >= duration:
+                    break
+                if execute and not source.enable_is_fresh(warmup_done):
+                    raise RuntimeError("Enable heartbeat released or expired between chunk actions")
+                action_age = now - chunk.observation_time
+                if action_age > config["max_result_age_sec"]:
+                    log.write(
+                        json.dumps(
+                            {
+                                "event": "chunk_truncated",
+                                "wall_time": time.time(),
+                                "mode": "execute" if execute else "shadow",
+                                "chunk_id": chunk_id,
+                                "next_chunk_index": chunk_index,
+                                "observation_age_sec": action_age,
+                                "reason": "Inference result too old for next chunk action; replanning",
+                            }
+                        )
+                        + "\n"
+                    )
+                    log.flush()
+                    break
+
+                measured = source.measured_state()
+                dt = config["control_period_sec"] if last_command_time is None else now - last_command_time
+                record = {
+                    "event": "control_tick",
+                    "wall_time": time.time(),
+                    "mode": "execute" if execute else "shadow",
+                    "synchronous": True,
+                    "chunk_id": chunk_id,
+                    "observation_age_sec": action_age,
+                    "inference_latency_sec": inference_latency,
+                    "chunk_index": chunk_index,
+                    "observation_state": chunk.observation_state.tolist(),
+                    "measured": measured.tolist(),
+                    "action0": action0.tolist(),
+                    "prediction": raw.tolist(),
+                    "distances": {
+                        "action0_vs_observation": action_distance_metrics(action0, chunk.observation_state),
+                        "action0_vs_current": action_distance_metrics(action0, measured),
+                        "current_vs_observation": action_distance_metrics(measured, chunk.observation_state),
+                        "action0_vs_previous_tick": (
+                            None
+                            if chunk_index != 0 or previous_action0 is None
+                            else action_distance_metrics(action0, previous_action0)
+                        ),
+                        "action0_vs_previous_inference": (
+                            None if previous_action0 is None else action_distance_metrics(action0, previous_action0)
+                        ),
+                        "prediction_vs_observation": action_distance_metrics(raw, chunk.observation_state),
+                        "prediction_vs_current": action_distance_metrics(raw, measured),
+                        "prediction_vs_previous_tick": (
+                            None if previous_prediction is None else action_distance_metrics(raw, previous_prediction)
+                        ),
+                    },
+                    "pose_sent": False,
+                    "gripper_sent": False,
+                }
+                if "tactile_marker_motion" in sample.data:
+                    record["tactile_marker"] = tactile_marker_summary(sample.data["tactile_marker_motion"])
+                try:
+                    command = guard.prepare(raw, measured, dt)
+                    pose, width = action_to_http(command)
+                    record.update(
+                        bounded_prediction=guard.last_bounded_target.tolist(),
+                        limited_action=command.tolist(),
+                        limits_applied=list(guard.last_limits_applied),
+                        saturated=bool(guard.last_limits_applied),
+                        pose_xyz_xyzw=pose.tolist(),
+                        gripper_width_m=width,
+                    )
+                    record["distances"]["bounded_vs_current"] = action_distance_metrics(
+                        guard.last_bounded_target, measured
+                    )
+                    record["distances"]["limited_vs_current"] = action_distance_metrics(command, measured)
+                    if execute:
+                        # Mark BEFORE sending: a timed-out request might already have moved the robot.
+                        commands_sent = True
+                        robot.command_pose(pose)
+                        pose_commands_sent += 1
+                        record["pose_sent"] = True
+                        if abs(width - last_width) > 0.0001:
+                            if stopped.is_set() or not source.enable_is_fresh(warmup_done):
+                                raise RuntimeError("Enable lost between pose and gripper commands")
+                            robot.command_width(width)
+                            gripper_commands_sent += 1
+                            record["gripper_sent"] = True
+                            last_width = width
+                        guard.commit(command)
+                        last_command_time = now
+                    else:
+                        # Shadow mode has no simulated actuator; each prediction is checked against real state.
+                        guard.commit(measured)
+                    record["ok"] = True
+                except ValueError as exc:
+                    record.update(ok=False, error=str(exc))
+                    if execute:
+                        raise
+                    logging.warning("Shadow target rejected: %s", exc)
                     guard.commit(measured)
-                record["ok"] = True
-            except ValueError as exc:
-                record.update(ok=False, error=str(exc))
-                if execute:
+                except BaseException as exc:
+                    record.update(ok=False, error=str(exc))
                     raise
-                logging.warning("Shadow target rejected: %s", exc)
-                guard.commit(measured)
-            except BaseException as exc:
-                record.update(ok=False, error=str(exc))
-                raise
-            finally:
-                log.write(json.dumps(record) + "\n")
-                log.flush()
-            previous_prediction = raw.copy()
-            count += 1
-            if count % 5 == 0:
+                finally:
+                    log.write(json.dumps(record) + "\n")
+                    log.flush()
+                previous_prediction = raw.copy()
+                count += 1
+            previous_action0 = action0.copy()
+            if chunk_id % 5 == 0:
                 logging.info(
-                    "%s synchronous: %d inferences, action[0], latency %.0f ms, limits=%s",
-                    record["mode"],
+                    "%s synchronous: %d inferences, %d control ticks, actions[0:%d], latency %.0f ms",
+                    "execute" if execute else "shadow",
+                    chunk_id,
                     count,
+                    config["actions_per_inference"],
                     1000 * inference_latency,
-                    record["limits_applied"],
                 )
     finally:
         # No automatic reset, clearerr, gripper open/close, or retry on failure.
@@ -240,7 +293,9 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
         policy.close()
     return {
         "reason": "stop_signal" if stopped.is_set() else "duration_elapsed",
+        "inference_chunks": chunk_id,
         "control_ticks": count,
+        "actions_per_inference": config["actions_per_inference"],
         "pose_commands_sent": pose_commands_sent,
         "gripper_commands_sent": gripper_commands_sent,
         "hold_sent": hold_sent,
@@ -255,12 +310,21 @@ def main():
     parser.add_argument("--policy-url", help="Override config policy_url, e.g. ws://192.168.1.20:8000")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--no-tactile", action="store_true", help="Requires a separately trained RGB+state server")
+    parser.add_argument(
+        "--actions-per-inference",
+        type=int,
+        help="Execute this many leading 10 Hz chunk actions before replanning (recommended: 1 or 2)",
+    )
     parser.add_argument("--seconds", type=float, default=30)
     parser.add_argument("--log", type=Path, required=True, help="New JSONL path; never overwrites an existing run")
     args = parser.parse_args()
     if not np.isfinite(args.seconds) or args.seconds <= 0:
         parser.error("--seconds must be finite and positive")
     config = load_config(args.config, robot_url=args.robot_url, policy_url=args.policy_url)
+    if args.actions_per_inference is not None:
+        if not 1 <= args.actions_per_inference <= 2:
+            parser.error("--actions-per-inference must be in [1, 2]")
+        config["actions_per_inference"] = args.actions_per_inference
     conversion_bytes = args.conversion.read_bytes()
     conversion = json.loads(conversion_bytes)
     validate_conversion(conversion)
@@ -277,7 +341,9 @@ def main():
                 {
                     "event": "start",
                     "execute": args.execute,
-                    "control_mode": "synchronous_action0",
+                    "control_mode": (
+                        "synchronous_action0" if config["actions_per_inference"] == 1 else "synchronous_action_prefix"
+                    ),
                     "prediction_limit_mode": "saturate",
                     "config": config,
                     "conversion_sha256": hashlib.sha256(conversion_bytes).hexdigest(),
@@ -297,6 +363,8 @@ def main():
                 use_tactile=not args.no_tactile,
                 conversion_sha256=hashlib.sha256(conversion_bytes).hexdigest(),
             )
+            if config["actions_per_inference"] > policy.metadata["action_horizon"]:
+                raise ValueError("actions_per_inference exceeds the server action_horizon")
             log.write(
                 json.dumps(
                     {

@@ -36,7 +36,7 @@ width_m = 2.0 * action[6]
 
 ```text
 机器人主机：ZED/D405/DM-Tac ROS2 -> 当前观测 -> WebSocket 模型主机（同步等待）
-                                             <- 绝对动作 chunk，只使用 action[0]
+                                             <- 绝对动作 chunk，默认 action[0]，可选安全前缀 action[0:2]
 机器人主机：目标检查、限速、使能和时效检查 -> 原 franka_server HTTP -> FR3
 ```
 
@@ -230,11 +230,22 @@ ros2 topic pub --rate 20 /tabero/enable std_msgs/msg/Bool '{data: true}'
 
 ## 8. 同步推理、饱和限幅与停止的实际含义
 
-每轮先读取一份当前观测，再阻塞等待模型返回，并只使用这次输出的`actions[0]`。机械臂等待期间
-不会由本客户端继续执行上一动作 chunk，因此不会再按旧观测年龄选择`actions[2]`或`actions[3]`。
+每轮先读取一份当前观测，再阻塞等待模型返回。默认只使用这次输出的`actions[0]`；显式设置
+`--actions-per-inference 2`时，先发送`actions[0]`，等待100 ms，再重新读取机器人实测状态并对
+`actions[1]`执行完整的workspace、目标距离、SO(3)、跟踪误差、速度、夹爪和持续使能检查。
+它不会一次性连续写入两个目标，也不会按推理耗时跳到`actions[2]`或`actions[3]`。
 `control_period_sec=0.10`是最快采样间隔；若一次推理耗时145 ms，实际控制频率约为6.9 Hz，
-不会为了追赶10 Hz连续补发命令。推理返回后会重新检查时长、停止信号和使能心跳；结果相对
-观测超过350 ms仍会退出。同步等待期间的心跳丢失最迟在推理返回或1秒WebSocket超时时发现。
+K=2时理论动作频率为`2 / (推理耗时 + 0.1 s)`。推理返回后会重新检查时长、停止信号和使能
+心跳；后续动作发送时观测年龄超过350 ms会丢弃该chunk剩余动作并立即用新观测重规划，日志
+写入`chunk_truncated`。同步等待期间的心跳丢失最迟在推理返回或1秒WebSocket超时时发现。
+
+当前真机实测推理约200 ms，因此建议先用K=2做shadow：理论上限约6.7 Hz，实际值还取决于
+`chunk_truncated`比例。K=3需要更长时间不使用新视觉/触觉观测，第三步通常也超过当前350 ms
+时效门限，所以客户端只允许1或2。默认K=1保持最短闭环；不能通过缩短100 ms动作间隔来提速。
+
+```bash
+.venv-fr3/bin/python examples/fr3_deploy/run.py --actions-per-inference 2 --seconds 60 --log deployment_logs/sync_k2_shadow_001.jsonl
+```
 
 有限预测先裁剪到XYZ工作空间和单指`[0,42.5] mm`，再将相对实测位置/姿态投影到最大
 5 cm和0.35 rad边界；随后最多输出2 mm/控制步、0.01 rad/控制步、夹爪总宽2 mm/控制步。

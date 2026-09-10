@@ -309,6 +309,7 @@ def test_server_contract_rejects_wrong_modalities_or_conversion():
 
 def test_live_config_uses_stream_specific_qos_and_url_overrides():
     config = run.load_config(ROOT / "config.json")
+    assert config["actions_per_inference"] == 1
     assert config["front_topic"].endswith("/compressed")
     assert config["front_compressed"] is True
     assert config["qos"]["front"] == {"reliability": "reliable", "depth": 1}
@@ -321,6 +322,15 @@ def test_live_config_uses_stream_specific_qos_and_url_overrides():
     )
     assert changed["robot_url"] == "http://172.31.179.19:5000"
     assert changed["policy_url"] == "ws://192.168.1.20:8000"
+
+
+def test_config_rejects_unsafe_action_prefix_length(tmp_path):
+    raw = json.loads((ROOT / "config.json").read_text())
+    raw["actions_per_inference"] = 3
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match=r"\[1, 2\]"):
+        run.load_config(path)
 
 
 def test_server_rejects_wrong_tactile_conversion_before_model_inference():
@@ -439,6 +449,36 @@ def test_shadow_makes_no_robot_writes_and_synchronously_uses_action_zero(monkeyp
     assert ticks[0]["distances"]["action0_vs_previous_tick"] is None
 
 
+def test_two_action_prefix_runs_at_dataset_period_and_rechecks_each_target(monkeypatch, config):
+    config["actions_per_inference"] = 2
+    execute, records, log = controller_fixture(monkeypatch, config)
+    summary = execute(live=False)
+    assert records == []
+    rows = [json.loads(line) for line in log.getvalue().splitlines()]
+    chunks = [row for row in rows if row["event"] == "inference_chunk"]
+    ticks = [row for row in rows if row["event"] == "control_tick"]
+    assert chunks[0]["requested_action_indices"] == [0, 1]
+    assert [row["chunk_index"] for row in ticks[:4]] == [0, 1, 0, 1]
+    assert ticks[1]["wall_time"] - ticks[0]["wall_time"] == pytest.approx(config["control_period_sec"])
+    assert ticks[1]["prediction"][0] - ticks[1]["observation_state"][0] == pytest.approx(0.0001)
+    assert ticks[1]["distances"]["prediction_vs_previous_tick"] is not None
+    assert summary["actions_per_inference"] == 2
+    assert summary["control_ticks"] > summary["inference_chunks"]
+
+
+def test_stale_second_chunk_action_is_dropped_and_replanned(monkeypatch, config):
+    config["actions_per_inference"] = 2
+    execute, records, log = controller_fixture(monkeypatch, config, latency=0.30)
+    summary = execute(live=False)
+    assert records == []
+    rows = [json.loads(line) for line in log.getvalue().splitlines()]
+    truncated = [row for row in rows if row["event"] == "chunk_truncated"]
+    assert truncated
+    assert truncated[0]["next_chunk_index"] == 1
+    assert truncated[0]["observation_age_sec"] > config["max_result_age_sec"]
+    assert summary["control_ticks"] < 2 * summary["inference_chunks"]
+
+
 def test_shadow_records_saturated_predictions_without_writes(monkeypatch, config):
     execute, records, log = controller_fixture(monkeypatch, config, invalid=True)
     execute(live=False)
@@ -462,7 +502,9 @@ def test_live_splits_pose_and_width_then_holds_on_exit(monkeypatch, config):
     assert all(row["ok"] for row in rows if row["event"] == "control_tick")
     assert summary == {
         "reason": "duration_elapsed",
+        "inference_chunks": 5,
         "control_ticks": 4,
+        "actions_per_inference": 1,
         "pose_commands_sent": 4,
         "gripper_commands_sent": 4,
         "hold_sent": True,
