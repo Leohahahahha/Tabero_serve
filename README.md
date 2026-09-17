@@ -12,6 +12,10 @@ The core feature of this repository is **tactile/force modality fusion**. On top
 
 FR3 deployment with ZED, D405 and DM-Tac W: see the [Chinese deployment guide](docs/tabero_fr3_deployment.md)
 for the model server, ROS2 client, observation contracts and manual shadow/execution commands.
+For a clean inference-host rewrite, use the [Chinese rewrite handoff](docs/tabero_fr3_inference_rewrite_handoff.md),
+which freezes the current contracts, summarizes the five failed K=2 trials, and defines staged acceptance criteria.
+For the paired next-state versus sent-command whiteboard runs with 6D wrist-wrench prediction, see the
+[Chinese paired-training guide](docs/tabero_whiteboard_pair_20k.md).
 
 Running the models in this repository requires an NVIDIA GPU. The estimated requirements are listed below (single-GPU estimates; multi-GPU model parallelism can also be configured through `fsdp_devices` to reduce per-GPU memory usage):
 

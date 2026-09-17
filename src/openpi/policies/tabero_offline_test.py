@@ -31,6 +31,13 @@ class HoldPolicy:
         return {"actions": np.tile(observation["state"], (len(noise), 1))}
 
 
+class HoldPolicyWithWrench(HoldPolicy):
+    def infer(self, observation, *, noise):
+        output = super().infer(observation, noise=noise)
+        output["wrist_wrench"] = np.zeros((len(noise), 6), dtype=np.float32)
+        return output
+
+
 def test_metrics_have_physical_units():
     target = np.zeros((2, 7))
     prediction = target.copy()
@@ -41,6 +48,18 @@ def test_metrics_have_physical_units():
     np.testing.assert_allclose(errors["position_mm"], 5)
     np.testing.assert_allclose(errors["rotation_deg"], 90)
     np.testing.assert_allclose(errors["gripper_mm"], 2)
+
+
+def test_wrench_metrics_have_physical_units():
+    target = np.zeros((2, 6))
+    prediction = target.copy()
+    prediction[:, :3] = [3.0, 4.0, 0.0]
+    prediction[:, 3:] = [0.0, 0.0, 0.2]
+    errors = offline.wrench_errors(prediction, target)
+    np.testing.assert_allclose(errors["force_l2_n"], 5.0)
+    np.testing.assert_allclose(errors["torque_l2_nm"], 0.2)
+    np.testing.assert_allclose(errors["force_component_mae_n"], 7 / 3)
+    np.testing.assert_allclose(errors["torque_component_mae_nm"], 0.2 / 3)
 
 
 def test_rotation_branch_equivalence():
@@ -107,6 +126,27 @@ def test_headless_plot(tmp_path):
     samples = [make_sample(frame=0), make_sample(frame=1)]
     offline.evaluate_dataset(HoldPolicy(), samples, {4: 2}, tmp_path, horizon=3, make_plots=True)
     assert (tmp_path / "episode_000004.png").read_bytes().startswith(b"\x89PNG")
+
+
+def test_action_wrench_evaluation_outputs_metrics_and_arrays(tmp_path):
+    samples = [make_sample(frame=0), make_sample(frame=1)]
+    for sample in samples:
+        sample["wrist_wrench"] = np.ones((3, 6), dtype=np.float32)
+        sample["wrist_wrench_is_pad"] = sample["actions_is_pad"].copy()
+    summary = offline.evaluate_dataset(
+        HoldPolicyWithWrench(),
+        samples,
+        {4: 2},
+        tmp_path,
+        horizon=3,
+        make_plots=True,
+        predict_wrench=True,
+    )
+    assert summary["overall"]["wrist_wrench"]["first_action"]["force_l2_n"]["mean"] == pytest.approx(np.sqrt(3))
+    assert (tmp_path / "episode_000004_wrench.png").read_bytes().startswith(b"\x89PNG")
+    with np.load(tmp_path / "predictions.npz", allow_pickle=False) as arrays:
+        assert arrays["wrench_prediction"].shape == (2, 3, 6)
+        assert arrays["wrench_target"].shape == (2, 3, 6)
 
 
 @pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])

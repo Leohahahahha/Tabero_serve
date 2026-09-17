@@ -61,7 +61,13 @@ def test_tactile_and_absolute_action_round_trip():
     state = np.arange(7, dtype=np.float32) / 100
     state[6] = 0.02
     actions = np.ones((50, 7), dtype=np.float32)
-    motion = np.arange(9 * 198 * 2, dtype=np.float32).reshape(9, 198, 2)
+    y = np.rint(np.linspace(0, 239, 9)).astype(np.float32)
+    x = np.rint(np.linspace(0, 319, 11)).astype(np.float32)
+    gx, gy = np.meshgrid(x, y)
+    side = np.stack((gx, gy), axis=-1).reshape(99, 2)
+    reference = np.concatenate((side, side)).astype(np.float32)
+    motion = np.repeat(reference[None], 9, axis=0)
+    motion[1:] += np.arange(8, dtype=np.float32)[:, None, None]
     data = {
         "image": np.zeros((32, 32, 3), np.uint8),
         "wrist_image": np.zeros((32, 32, 3), np.uint8),

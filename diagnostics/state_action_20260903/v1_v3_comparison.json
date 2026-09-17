@@ -1,0 +1,967 @@
+{
+  "v1": {
+    "episodes": 29,
+    "frames": 6655,
+    "action_state": {
+      "position_mm": {
+        "count": 6655,
+        "p50": 7.483952045440674,
+        "p95": 64.50928649902316,
+        "p99": 423.35912841796875,
+        "max": 456.5146179199219
+      },
+      "physical_rotation_deg": {
+        "count": 6655,
+        "p50": 0.7507575144510824,
+        "p95": 2.733436800019563,
+        "p99": 5.809430370287023,
+        "max": 10.428578201935146
+      },
+      "rotvec_component_norm_rad": {
+        "count": 6655,
+        "p50": 0.019400764256715775,
+        "p95": 6.26779842376709,
+        "p99": 6.279164752960205,
+        "max": 6.2827467918396
+      },
+      "gripper_mm": {
+        "count": 6655,
+        "p50": 1.3615005016326904,
+        "p95": 3.334621024131773,
+        "p99": 5.2422919273376465,
+        "max": 7.919583320617676
+      },
+      "position_over_50mm": 527,
+      "physical_rotation_over_20deg": 0,
+      "rotvec_branch_frames": 638
+    },
+    "adjacent_action": {
+      "position_mm": {
+        "count": 6626,
+        "p50": 0.8214234411716461,
+        "p95": 18.25702667236328,
+        "p99": 24.742483615875244,
+        "max": 455.0738220214844
+      },
+      "physical_rotation_deg": {
+        "count": 6626,
+        "p50": 0.0,
+        "p95": 0.5792690941218288,
+        "p99": 1.9443993992872688,
+        "max": 10.428387634304253
+      },
+      "rotvec_component_norm_rad": {
+        "count": 6626,
+        "p50": 0.0,
+        "p95": 0.014728921698406339,
+        "p99": 0.081223014742136,
+        "max": 6.281741619110107
+      },
+      "gripper_mm": {
+        "count": 6626,
+        "p50": 0.0,
+        "p95": 0.8175028264522552,
+        "p99": 2.2189584970474243,
+        "max": 2.2393949031829834
+      },
+      "position_over_50mm": 32,
+      "physical_rotation_over_20deg": 0,
+      "rotvec_branch_steps": 62
+    },
+    "first_action_state_over_50mm_episodes": 28,
+    "first_action_equals_previous_last_action_episodes": 14,
+    "per_episode": [
+      {
+        "episode": 0,
+        "frames": 201,
+        "first_action_state_position_mm": 381.824462890625,
+        "max_action_state_position_mm": 381.82476806640625,
+        "max_adjacent_action_position_mm": 381.8241882324219,
+        "max_adjacent_action_physical_rotation_deg": 2.620206243104985,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 25,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 1,
+        "frames": 228,
+        "first_action_state_position_mm": 401.7086181640625,
+        "max_action_state_position_mm": 401.7109680175781,
+        "max_adjacent_action_position_mm": 399.9216613769531,
+        "max_adjacent_action_physical_rotation_deg": 5.809402524880183,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 28,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 2,
+        "frames": 250,
+        "first_action_state_position_mm": 233.8546142578125,
+        "max_action_state_position_mm": 233.8546142578125,
+        "max_adjacent_action_position_mm": 232.8108673095703,
+        "max_adjacent_action_physical_rotation_deg": 2.2489723425831243,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 19,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 3,
+        "frames": 239,
+        "first_action_state_position_mm": 435.9687194824219,
+        "max_action_state_position_mm": 435.97015380859375,
+        "max_adjacent_action_position_mm": 433.25164794921875,
+        "max_adjacent_action_physical_rotation_deg": 6.27666289120695,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 36,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 4,
+        "frames": 222,
+        "first_action_state_position_mm": 423.3592529296875,
+        "max_action_state_position_mm": 423.3604431152344,
+        "max_adjacent_action_position_mm": 420.0975646972656,
+        "max_adjacent_action_physical_rotation_deg": 1.9538012081336935,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 29,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 5,
+        "frames": 189,
+        "first_action_state_position_mm": 341.3836669921875,
+        "max_action_state_position_mm": 341.3843078613281,
+        "max_adjacent_action_position_mm": 341.38421630859375,
+        "max_adjacent_action_physical_rotation_deg": 3.744147826932536,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 11,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 6,
+        "frames": 170,
+        "first_action_state_position_mm": 2.5863163471221924,
+        "max_action_state_position_mm": 61.078426361083984,
+        "max_adjacent_action_position_mm": 25.800596237182617,
+        "max_adjacent_action_physical_rotation_deg": 1.7251708292464998,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 10,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 7,
+        "frames": 218,
+        "first_action_state_position_mm": 98.28755950927734,
+        "max_action_state_position_mm": 98.28755950927734,
+        "max_adjacent_action_position_mm": 96.91860961914062,
+        "max_adjacent_action_physical_rotation_deg": 2.1548653648220912,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 31,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 8,
+        "frames": 229,
+        "first_action_state_position_mm": 425.79339599609375,
+        "max_action_state_position_mm": 425.7941589355469,
+        "max_adjacent_action_position_mm": 424.1864929199219,
+        "max_adjacent_action_physical_rotation_deg": 4.75595765674758,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 15,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 9,
+        "frames": 240,
+        "first_action_state_position_mm": 427.2080383300781,
+        "max_action_state_position_mm": 427.2088928222656,
+        "max_adjacent_action_position_mm": 427.2081298828125,
+        "max_adjacent_action_physical_rotation_deg": 3.3603699319089664,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 12,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 10,
+        "frames": 247,
+        "first_action_state_position_mm": 134.36558532714844,
+        "max_action_state_position_mm": 134.36648559570312,
+        "max_adjacent_action_position_mm": 134.36453247070312,
+        "max_adjacent_action_physical_rotation_deg": 2.9461227449954634,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 9,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 11,
+        "frames": 200,
+        "first_action_state_position_mm": 330.08001708984375,
+        "max_action_state_position_mm": 330.08001708984375,
+        "max_adjacent_action_position_mm": 327.1672058105469,
+        "max_adjacent_action_physical_rotation_deg": 1.8418193949234942,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 9,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 12,
+        "frames": 224,
+        "first_action_state_position_mm": 337.5460205078125,
+        "max_action_state_position_mm": 337.5463562011719,
+        "max_adjacent_action_position_mm": 337.5459289550781,
+        "max_adjacent_action_physical_rotation_deg": 3.4514602958589595,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 44,
+        "adjacent_action_rotvec_branch_steps": 6
+      },
+      {
+        "episode": 13,
+        "frames": 222,
+        "first_action_state_position_mm": 325.1790771484375,
+        "max_action_state_position_mm": 325.18048095703125,
+        "max_adjacent_action_position_mm": 325.17706298828125,
+        "max_adjacent_action_physical_rotation_deg": 4.782305959284114,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 5,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 14,
+        "frames": 222,
+        "first_action_state_position_mm": 277.9859924316406,
+        "max_action_state_position_mm": 277.9873352050781,
+        "max_adjacent_action_position_mm": 277.9862060546875,
+        "max_adjacent_action_physical_rotation_deg": 1.992229360664091,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 23,
+        "adjacent_action_rotvec_branch_steps": 4
+      },
+      {
+        "episode": 15,
+        "frames": 221,
+        "first_action_state_position_mm": 271.9093933105469,
+        "max_action_state_position_mm": 271.9093933105469,
+        "max_adjacent_action_position_mm": 271.9053955078125,
+        "max_adjacent_action_physical_rotation_deg": 3.9190880278880007,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 28,
+        "adjacent_action_rotvec_branch_steps": 4
+      },
+      {
+        "episode": 16,
+        "frames": 259,
+        "first_action_state_position_mm": 402.1624450683594,
+        "max_action_state_position_mm": 402.1642761230469,
+        "max_adjacent_action_position_mm": 402.1617736816406,
+        "max_adjacent_action_physical_rotation_deg": 4.59545890993066,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 15,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 17,
+        "frames": 272,
+        "first_action_state_position_mm": 438.8100280761719,
+        "max_action_state_position_mm": 438.8100280761719,
+        "max_adjacent_action_position_mm": 438.11785888671875,
+        "max_adjacent_action_physical_rotation_deg": 6.211743763451715,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 34,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 18,
+        "frames": 236,
+        "first_action_state_position_mm": 349.8858642578125,
+        "max_action_state_position_mm": 349.8858642578125,
+        "max_adjacent_action_position_mm": 349.8769836425781,
+        "max_adjacent_action_physical_rotation_deg": 3.7967536031221614,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 9,
+        "adjacent_action_rotvec_branch_steps": 0
+      },
+      {
+        "episode": 19,
+        "frames": 300,
+        "first_action_state_position_mm": 339.04608154296875,
+        "max_action_state_position_mm": 339.0476379394531,
+        "max_adjacent_action_position_mm": 336.2825622558594,
+        "max_adjacent_action_physical_rotation_deg": 4.1333360936284285,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 14,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 20,
+        "frames": 234,
+        "first_action_state_position_mm": 340.30194091796875,
+        "max_action_state_position_mm": 340.3025207519531,
+        "max_adjacent_action_position_mm": 338.2353210449219,
+        "max_adjacent_action_physical_rotation_deg": 3.3608300307238133,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 16,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 21,
+        "frames": 198,
+        "first_action_state_position_mm": 360.39471435546875,
+        "max_action_state_position_mm": 360.39764404296875,
+        "max_adjacent_action_position_mm": 355.75634765625,
+        "max_adjacent_action_physical_rotation_deg": 5.013703651797239,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 29,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 22,
+        "frames": 252,
+        "first_action_state_position_mm": 298.36944580078125,
+        "max_action_state_position_mm": 298.36944580078125,
+        "max_adjacent_action_position_mm": 297.0372009277344,
+        "max_adjacent_action_physical_rotation_deg": 2.482573184648244,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 40,
+        "adjacent_action_rotvec_branch_steps": 5
+      },
+      {
+        "episode": 23,
+        "frames": 260,
+        "first_action_state_position_mm": 279.1007080078125,
+        "max_action_state_position_mm": 279.1007080078125,
+        "max_adjacent_action_position_mm": 276.4968566894531,
+        "max_adjacent_action_physical_rotation_deg": 1.7328167676538655,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 42,
+        "adjacent_action_rotvec_branch_steps": 4
+      },
+      {
+        "episode": 24,
+        "frames": 249,
+        "first_action_state_position_mm": 390.3091125488281,
+        "max_action_state_position_mm": 390.3091125488281,
+        "max_adjacent_action_position_mm": 390.3047180175781,
+        "max_adjacent_action_physical_rotation_deg": 5.825953896265844,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 22,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 25,
+        "frames": 268,
+        "first_action_state_position_mm": 456.5113830566406,
+        "max_action_state_position_mm": 456.5146179199219,
+        "max_adjacent_action_position_mm": 455.0738220214844,
+        "max_adjacent_action_physical_rotation_deg": 10.428387634304253,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 28,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 26,
+        "frames": 208,
+        "first_action_state_position_mm": 181.5583038330078,
+        "max_action_state_position_mm": 181.5583038330078,
+        "max_adjacent_action_position_mm": 180.9564666748047,
+        "max_adjacent_action_physical_rotation_deg": 2.3960355822354833,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 9,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 27,
+        "frames": 192,
+        "first_action_state_position_mm": 410.8385314941406,
+        "max_action_state_position_mm": 410.8389587402344,
+        "max_adjacent_action_position_mm": 408.8280334472656,
+        "max_adjacent_action_physical_rotation_deg": 7.084382774420662,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 22,
+        "adjacent_action_rotvec_branch_steps": 4
+      },
+      {
+        "episode": 28,
+        "frames": 205,
+        "first_action_state_position_mm": 369.87274169921875,
+        "max_action_state_position_mm": 369.87274169921875,
+        "max_adjacent_action_position_mm": 369.8699645996094,
+        "max_adjacent_action_physical_rotation_deg": 4.860488390606133,
+        "first_action_equals_previous_last_action": true,
+        "action_state_rotvec_branch_frames": 24,
+        "adjacent_action_rotvec_branch_steps": 2
+      }
+    ]
+  },
+  "v3": {
+    "episodes": 29,
+    "frames": 6626,
+    "action_state": {
+      "position_mm": {
+        "count": 6626,
+        "p50": 1.163378357887268,
+        "p95": 14.718416929244995,
+        "p99": 18.510776042938232,
+        "max": 45.50117492675781
+      },
+      "physical_rotation_deg": {
+        "count": 6626,
+        "p50": 0.059485767982998594,
+        "p95": 0.4192986515424293,
+        "p99": 0.620794733488758,
+        "max": 1.2252098695510756
+      },
+      "rotvec_component_norm_rad": {
+        "count": 6626,
+        "p50": 0.001471581868827343,
+        "p95": 0.011281205341219902,
+        "p99": 6.280280828475952,
+        "max": 6.283054351806641
+      },
+      "gripper_mm": {
+        "count": 6626,
+        "p50": 0.0,
+        "p95": 0.5616731643676758,
+        "p99": 2.2466964721679688,
+        "max": 4.3061676025390625
+      },
+      "position_over_50mm": 0,
+      "physical_rotation_over_20deg": 0,
+      "rotvec_branch_frames": 114
+    },
+    "adjacent_action": {
+      "position_mm": {
+        "count": 6597,
+        "p50": 1.1853423118591309,
+        "p95": 14.729044532775877,
+        "p99": 18.520620117187498,
+        "max": 45.50117492675781
+      },
+      "physical_rotation_deg": {
+        "count": 6597,
+        "p50": 0.06020987861739688,
+        "p95": 0.42035785182577223,
+        "p99": 0.6211911524261982,
+        "max": 1.2252098695510756
+      },
+      "rotvec_component_norm_rad": {
+        "count": 6597,
+        "p50": 0.0014939873944967985,
+        "p95": 0.01133709717541932,
+        "p99": 6.2802894592285154,
+        "max": 6.283054351806641
+      },
+      "gripper_mm": {
+        "count": 6597,
+        "p50": 0.0,
+        "p95": 0.5616731643676758,
+        "p99": 2.2466964721679688,
+        "max": 4.3061676025390625
+      },
+      "position_over_50mm": 0,
+      "physical_rotation_over_20deg": 0,
+      "rotvec_branch_steps": 114
+    },
+    "first_action_state_over_50mm_episodes": 0,
+    "first_action_equals_previous_last_action_episodes": 0,
+    "per_episode": [
+      {
+        "episode": 0,
+        "frames": 200,
+        "first_action_state_position_mm": 0.0013549902942031622,
+        "max_action_state_position_mm": 19.800384521484375,
+        "max_adjacent_action_position_mm": 19.800384521484375,
+        "max_adjacent_action_physical_rotation_deg": 0.6211424931930236,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 1,
+        "frames": 227,
+        "first_action_state_position_mm": 0.0010799765586853027,
+        "max_action_state_position_mm": 21.719284057617188,
+        "max_adjacent_action_position_mm": 21.719284057617188,
+        "max_adjacent_action_physical_rotation_deg": 0.9075393593263452,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 2,
+        "frames": 249,
+        "first_action_state_position_mm": 0.002790548373013735,
+        "max_action_state_position_mm": 20.344493865966797,
+        "max_adjacent_action_position_mm": 20.344493865966797,
+        "max_adjacent_action_physical_rotation_deg": 0.617554274108963,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 5,
+        "adjacent_action_rotvec_branch_steps": 5
+      },
+      {
+        "episode": 3,
+        "frames": 238,
+        "first_action_state_position_mm": 0.0010235243244096637,
+        "max_action_state_position_mm": 21.560300827026367,
+        "max_adjacent_action_position_mm": 21.560300827026367,
+        "max_adjacent_action_physical_rotation_deg": 0.776609068584653,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 4,
+        "frames": 221,
+        "first_action_state_position_mm": 0.0016691562486812472,
+        "max_action_state_position_mm": 20.661283493041992,
+        "max_adjacent_action_position_mm": 20.661283493041992,
+        "max_adjacent_action_physical_rotation_deg": 0.6661001951970971,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 5,
+        "adjacent_action_rotvec_branch_steps": 5
+      },
+      {
+        "episode": 5,
+        "frames": 188,
+        "first_action_state_position_mm": 0.0031040869653224945,
+        "max_action_state_position_mm": 19.998079299926758,
+        "max_adjacent_action_position_mm": 19.998079299926758,
+        "max_adjacent_action_physical_rotation_deg": 0.6721613095176703,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 2,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 6,
+        "frames": 169,
+        "first_action_state_position_mm": 0.003483674954622984,
+        "max_action_state_position_mm": 21.775718688964844,
+        "max_adjacent_action_position_mm": 21.775718688964844,
+        "max_adjacent_action_physical_rotation_deg": 0.7170248648640032,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 7,
+        "frames": 217,
+        "first_action_state_position_mm": 0.0025052472483366728,
+        "max_action_state_position_mm": 19.011831283569336,
+        "max_adjacent_action_position_mm": 19.011831283569336,
+        "max_adjacent_action_physical_rotation_deg": 0.7246782816604898,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 5,
+        "adjacent_action_rotvec_branch_steps": 5
+      },
+      {
+        "episode": 8,
+        "frames": 228,
+        "first_action_state_position_mm": 0.0022670321632176638,
+        "max_action_state_position_mm": 21.632911682128906,
+        "max_adjacent_action_position_mm": 21.632911682128906,
+        "max_adjacent_action_physical_rotation_deg": 0.7763897539358668,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 2,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 9,
+        "frames": 239,
+        "first_action_state_position_mm": 0.0011890785535797477,
+        "max_action_state_position_mm": 18.652990341186523,
+        "max_adjacent_action_position_mm": 18.652990341186523,
+        "max_adjacent_action_physical_rotation_deg": 1.1452158085051054,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 10,
+        "frames": 246,
+        "first_action_state_position_mm": 0.002222063485532999,
+        "max_action_state_position_mm": 18.992626190185547,
+        "max_adjacent_action_position_mm": 18.992626190185547,
+        "max_adjacent_action_physical_rotation_deg": 0.7784069299136591,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 11,
+        "frames": 199,
+        "first_action_state_position_mm": 0.0,
+        "max_action_state_position_mm": 20.037572860717773,
+        "max_adjacent_action_position_mm": 20.037572860717773,
+        "max_adjacent_action_physical_rotation_deg": 0.5944982205046665,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 1,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 12,
+        "frames": 223,
+        "first_action_state_position_mm": 0.0018148187082260847,
+        "max_action_state_position_mm": 22.06378173828125,
+        "max_adjacent_action_position_mm": 22.06378173828125,
+        "max_adjacent_action_physical_rotation_deg": 0.4979432459748483,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 7,
+        "adjacent_action_rotvec_branch_steps": 7
+      },
+      {
+        "episode": 13,
+        "frames": 221,
+        "first_action_state_position_mm": 0.0011692604748532176,
+        "max_action_state_position_mm": 17.55923843383789,
+        "max_adjacent_action_position_mm": 17.55923843383789,
+        "max_adjacent_action_physical_rotation_deg": 0.6104305014209002,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 2,
+        "adjacent_action_rotvec_branch_steps": 2
+      },
+      {
+        "episode": 14,
+        "frames": 221,
+        "first_action_state_position_mm": 0.0018922941526398063,
+        "max_action_state_position_mm": 17.403696060180664,
+        "max_adjacent_action_position_mm": 17.403696060180664,
+        "max_adjacent_action_physical_rotation_deg": 0.7271558437199646,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 8,
+        "adjacent_action_rotvec_branch_steps": 8
+      },
+      {
+        "episode": 15,
+        "frames": 220,
+        "first_action_state_position_mm": 0.0019208446610718966,
+        "max_action_state_position_mm": 19.071250915527344,
+        "max_adjacent_action_position_mm": 19.071250915527344,
+        "max_adjacent_action_physical_rotation_deg": 0.864694680438324,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 5,
+        "adjacent_action_rotvec_branch_steps": 5
+      },
+      {
+        "episode": 16,
+        "frames": 258,
+        "first_action_state_position_mm": 0.002923030639067292,
+        "max_action_state_position_mm": 20.275012969970703,
+        "max_adjacent_action_position_mm": 20.275012969970703,
+        "max_adjacent_action_physical_rotation_deg": 0.8296408735382756,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 17,
+        "frames": 271,
+        "first_action_state_position_mm": 0.0,
+        "max_action_state_position_mm": 45.50117492675781,
+        "max_adjacent_action_position_mm": 45.50117492675781,
+        "max_adjacent_action_physical_rotation_deg": 1.2252098695510756,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 4,
+        "adjacent_action_rotvec_branch_steps": 4
+      },
+      {
+        "episode": 18,
+        "frames": 235,
+        "first_action_state_position_mm": 0.003924396820366383,
+        "max_action_state_position_mm": 21.40179443359375,
+        "max_adjacent_action_position_mm": 21.40179443359375,
+        "max_adjacent_action_physical_rotation_deg": 0.6136358223381351,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 4,
+        "adjacent_action_rotvec_branch_steps": 4
+      },
+      {
+        "episode": 19,
+        "frames": 299,
+        "first_action_state_position_mm": 0.001472745556384325,
+        "max_action_state_position_mm": 18.624378204345703,
+        "max_adjacent_action_position_mm": 18.624378204345703,
+        "max_adjacent_action_physical_rotation_deg": 1.0415427773252843,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 20,
+        "frames": 233,
+        "first_action_state_position_mm": 0.0011846254346892238,
+        "max_action_state_position_mm": 29.693286895751953,
+        "max_adjacent_action_position_mm": 29.693286895751953,
+        "max_adjacent_action_physical_rotation_deg": 0.9421895892672757,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 6,
+        "adjacent_action_rotvec_branch_steps": 6
+      },
+      {
+        "episode": 21,
+        "frames": 197,
+        "first_action_state_position_mm": 0.0008368539856746793,
+        "max_action_state_position_mm": 19.316028594970703,
+        "max_adjacent_action_position_mm": 19.316028594970703,
+        "max_adjacent_action_physical_rotation_deg": 0.6865696643725617,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      },
+      {
+        "episode": 22,
+        "frames": 251,
+        "first_action_state_position_mm": 0.0,
+        "max_action_state_position_mm": 18.060232162475586,
+        "max_adjacent_action_position_mm": 18.060232162475586,
+        "max_adjacent_action_physical_rotation_deg": 0.5616940214320919,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 10,
+        "adjacent_action_rotvec_branch_steps": 10
+      },
+      {
+        "episode": 23,
+        "frames": 259,
+        "first_action_state_position_mm": 0.0,
+        "max_action_state_position_mm": 19.175891876220703,
+        "max_adjacent_action_position_mm": 19.175891876220703,
+        "max_adjacent_action_physical_rotation_deg": 0.586412145582485,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 5,
+        "adjacent_action_rotvec_branch_steps": 5
+      },
+      {
+        "episode": 24,
+        "frames": 248,
+        "first_action_state_position_mm": 0.012299049645662308,
+        "max_action_state_position_mm": 17.251802444458008,
+        "max_adjacent_action_position_mm": 17.251802444458008,
+        "max_adjacent_action_physical_rotation_deg": 0.7782090883873285,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 1,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 25,
+        "frames": 267,
+        "first_action_state_position_mm": 0.006388991139829159,
+        "max_action_state_position_mm": 17.978242874145508,
+        "max_adjacent_action_position_mm": 17.978242874145508,
+        "max_adjacent_action_physical_rotation_deg": 0.8329049762237571,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 4,
+        "adjacent_action_rotvec_branch_steps": 4
+      },
+      {
+        "episode": 26,
+        "frames": 207,
+        "first_action_state_position_mm": 0.0,
+        "max_action_state_position_mm": 22.6207332611084,
+        "max_adjacent_action_position_mm": 22.6207332611084,
+        "max_adjacent_action_physical_rotation_deg": 0.6625673234643005,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 1,
+        "adjacent_action_rotvec_branch_steps": 1
+      },
+      {
+        "episode": 27,
+        "frames": 191,
+        "first_action_state_position_mm": 0.0022905992809683084,
+        "max_action_state_position_mm": 24.72535514831543,
+        "max_adjacent_action_position_mm": 24.72535514831543,
+        "max_adjacent_action_physical_rotation_deg": 0.5119353006095794,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 7,
+        "adjacent_action_rotvec_branch_steps": 7
+      },
+      {
+        "episode": 28,
+        "frames": 204,
+        "first_action_state_position_mm": 0.0018786040600389242,
+        "max_action_state_position_mm": 15.884598731994629,
+        "max_adjacent_action_position_mm": 15.884598731994629,
+        "max_adjacent_action_physical_rotation_deg": 0.6264260867889733,
+        "first_action_equals_previous_last_action": false,
+        "action_state_rotvec_branch_frames": 3,
+        "adjacent_action_rotvec_branch_steps": 3
+      }
+    ]
+  },
+  "v3_contract": {
+    "all_episodes_exact": true,
+    "episodes": [
+      {
+        "episode": 0,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 1,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 2,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 3,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 4,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 5,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 6,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 7,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 8,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 9,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 10,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 11,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 12,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 13,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 14,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 15,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 16,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 17,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 18,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 19,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 20,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 21,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 22,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 23,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 24,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 25,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 26,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 27,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      },
+      {
+        "episode": 28,
+        "v3_frames_equal_v1_minus_one": true,
+        "v3_state_equals_v1_state_without_last": true,
+        "v3_action_equals_v1_next_state": true
+      }
+    ]
+  }
+}

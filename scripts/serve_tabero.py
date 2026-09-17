@@ -38,12 +38,23 @@ def load_policy(config_name, checkpoint, conversion_path, denoise_steps):
     if not (checkpoint / "params").is_dir():
         raise ValueError("Pass the complete JAX step directory containing params/ and assets/, not params/ itself")
     config = configs.get_config(config_name)
+    policy_metadata = config.policy_metadata or {}
+    predicts_wrench = bool(policy_metadata.get("predicts_wrench", False))
+    action_only_contract = (
+        config.model.supervised_action_dim == 7 and getattr(config.data, "action_only", False)
+    )
+    action_wrench_contract = (
+        predicts_wrench
+        and config.model.supervised_action_dim is None
+        and config.model.effective_action_dim == 13
+        and config.model.tactile_dim == 6
+        and type(config.data).__name__ == "TaberoTacFieldWrenchDataConfig"
+    )
     if (
-        getattr(config.model, "supervised_action_dim", None) != 7
-        or not getattr(config.data, "action_only", False)
-        or config.policy_metadata.get("action_representation") != "absolute_xyz_axis_angle_single_finger_m"
+        not (action_only_contract or action_wrench_contract)
+        or policy_metadata.get("action_representation") != "absolute_xyz_axis_angle_single_finger_m"
     ):
-        raise ValueError("Select a real-FR3 action-only training config matching this checkpoint")
+        raise ValueError("Select a real-FR3 7D-action or 7D-action+6D-wrench config matching this checkpoint")
     use_tactile = "tactile_prefix" in config.model.tactile_streams
     # Avoid original-host paths even during DataConfig.create(). No dataset is opened.
     config = dataclasses.replace(
@@ -66,12 +77,17 @@ def load_policy(config_name, checkpoint, conversion_path, denoise_steps):
             f"{sorted(required_stats)} at {stats_path}; present keys={sorted(present_stats)}, "
             f"checkpoint asset_ids={available_assets}. Use the exact training config for this checkpoint."
         )
+    expected_target_dim = 13 if predicts_wrench else 7
+    action_stats = (data_config.norm_stats or {}).get("actions")
+    if action_stats is None or len(action_stats.mean) != expected_target_dim:
+        actual_dim = None if action_stats is None else len(action_stats.mean)
+        raise ValueError(f"Expected {expected_target_dim}D action normalization for this policy, got {actual_dim}")
     conversion = json.loads(conversion_path.read_bytes())
     if conversion["output_contract"] != "tabero_action_only_lerobot_v2.1":
         raise ValueError("Unexpected training conversion metadata")
     validate_tactile_contract(config.policy_metadata, conversion, use_tactile)
     metadata = {
-        **config.policy_metadata,
+        **policy_metadata,
         "deployment_protocol": "tabero_fr3_absolute_v1",
         "use_tactile": use_tactile,
         "action_horizon": config.model.action_horizon,

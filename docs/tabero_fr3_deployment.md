@@ -12,6 +12,7 @@
 | 输入图像 | HWC、RGB、uint8；前视原图 540×960，裁剪 `[350,0,740,520]`；腕部 480×640 |
 | 输入触觉 | 必需的 `tactile_marker_motion`，float32 `[9,198,2]`；参考网格 + 8帧历史，每帧左99点后右99点 |
 | `policy.infer()["actions"]` | `[50,7]`，反归一化且恢复绝对坐标后的目标 |
+| `policy.infer()["wrist_wrench"]` | 仅含力模型提供 `[50,6]`：K系 `Fx,Fy,Fz`（N）和 `Tx,Ty,Tz`（N·m），只记录、不直接控制 |
 | `/pose` | `{"arr":[x,y,z,qx,qy,qz,qw]}` |
 | `/move_gripper` | `{"gripper_width": 2*finger_m}`，两指总开口宽度 |
 
@@ -31,6 +32,8 @@ width_m = 2.0 * action[6]
 `delta_linear_gain` / `delta_angular_gain` / `R_map`。训练标签已是机械臂基坐标系的目标。
 本实现假定部署继续使用相同 FR3 基坐标系、末端/TCP 定义、夹具和相机安装。
 移动相机、修改 TCP 或更换机器人基准后，不能只替换 IP 就认为观测仍与训练一致。
+含力模型仍只把7D `actions`送入这条动作安全链；额外预测的`wrist_wrench`会先检查shape和有限值，
+随后写入`inference_chunk.predicted_wrist_wrench`，当前实现不会据此产生力控命令。
 
 ## 2. 两台主机如何分工
 

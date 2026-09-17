@@ -39,9 +39,9 @@ def eval_step(rng, state, batch):
     observation, actions = batch
     if isinstance(model, Pi0):
         loss, components = model.compute_loss(rng, observation, actions, train=False, return_components=True)
-        return {"loss": jnp.mean(loss), "action_loss": components["action_loss"]}
+        return {"loss": jnp.mean(loss, dtype=jnp.float32), "action_loss": components["action_loss"]}
     loss = model.compute_loss(rng, observation, actions, train=False)
-    return {"loss": jnp.mean(loss)}
+    return {"loss": jnp.mean(loss, dtype=jnp.float32)}
 
 
 def init_logging():
@@ -97,6 +97,50 @@ def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shap
     )
 
 
+def apply_parameter_dtype_policy(params: nnx.State, config: _config.TrainConfig) -> nnx.State:
+    """Cast trainable parameter storage according to the config-owned path policy."""
+    policy = config.parameter_dtype_policy
+    if policy is None:
+        return params
+
+    params = nnx_utils.state_map(
+        params,
+        config.trainable_filter,
+        lambda p: p.replace(p.value.astype(jnp.dtype(policy.default_trainable_dtype))),
+    )
+    for rule in policy.overrides:
+        params = nnx_utils.state_map(
+            params,
+            nnx.All(config.trainable_filter, nnx_utils.PathRegex(rule.path_regex)),
+            lambda p, dtype=rule.dtype: p.replace(p.value.astype(jnp.dtype(dtype))),
+        )
+    return params
+
+
+def apply_gradient_dtype_policy(grads, config: _config.TrainConfig):
+    """Cast gradient storage according to the config-owned precision policy."""
+    policy = config.parameter_dtype_policy
+    if policy is None or policy.gradient_dtype == "match_parameter":
+        return grads
+    if policy.gradient_dtype == "float32":
+        return jax.tree.map(lambda grad: grad.astype(jnp.float32), grads)
+    raise ValueError(f"Unsupported gradient dtype policy: {policy.gradient_dtype}")
+
+
+def array_dtype_summary(tree) -> dict[str, dict[str, int]]:
+    """Return leaf, element and global-byte counts grouped by storage dtype."""
+    summary: dict[str, dict[str, int]] = {}
+    for leaf in jax.tree.leaves(tree):
+        if not hasattr(leaf, "dtype") or not hasattr(leaf, "size"):
+            continue
+        dtype = str(jnp.dtype(leaf.dtype))
+        group = summary.setdefault(dtype, {"leaves": 0, "elements": 0, "global_bytes": 0})
+        group["leaves"] += 1
+        group["elements"] += int(leaf.size)
+        group["global_bytes"] += int(leaf.size) * jnp.dtype(leaf.dtype).itemsize
+    return summary
+
+
 def checkpoint_step_and_due(config: _config.TrainConfig, loop_step: int, start_step: int) -> tuple[int, bool]:
     """Return the checkpoint label and whether this completed update is periodic."""
     checkpoint_step = loop_step + 1 if config.checkpoint_step_is_update_count else loop_step
@@ -124,6 +168,7 @@ def init_train_state(
         params = nnx.state(model)
         # Convert frozen params to bfloat16.
         params = nnx_utils.state_map(params, config.freeze_filter, lambda p: p.replace(p.value.astype(jnp.bfloat16)))
+        params = apply_parameter_dtype_policy(params, config)
 
         return training_utils.TrainState(
             step=0,
@@ -186,7 +231,9 @@ def train_step(
             action_loss_mean = jnp.array(0.0, dtype=jnp.float32)
             tactile_loss_mean = jnp.array(0.0, dtype=jnp.float32)
 
-        total_loss = jnp.mean(chunked_loss)
+        # Accumulate the scalar objective in FP32 even when the large trainable
+        # matrices and their gradients are stored in BF16.
+        total_loss = jnp.mean(chunked_loss, dtype=jnp.float32)
         aux = {
             "action_loss": action_loss_mean,
             "tactile_loss": tactile_loss_mean,
@@ -201,6 +248,7 @@ def train_step(
     (loss, aux), grads = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(
         model, train_rng, observation, actions
     )
+    grads = apply_gradient_dtype_policy(grads, config)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -242,8 +290,8 @@ def train_step(
     )
     info = {
         "loss": loss,
-        "grad_norm": optax.global_norm(grads),
-        "param_norm": optax.global_norm(kernel_params),
+        "grad_norm": _optimizer.global_norm(grads),
+        "param_norm": _optimizer.global_norm(kernel_params),
         # Implementation note.
         "action_loss": aux["action_loss"],
         "tactile_loss": aux["tactile_loss"],
@@ -321,6 +369,10 @@ def main(config: _config.TrainConfig):
     total_count = sum(x.size for x in jax.tree.leaves(train_state.params))
     logging.info(
         "Trainable parameters: %d / %d (%.3f%%)", trainable_count, total_count, 100 * trainable_count / total_count
+    )
+    logging.info("Trainable parameter dtype summary: %s", json.dumps(array_dtype_summary(trainable), sort_keys=True))
+    logging.info(
+        "Optimizer-state dtype summary: %s", json.dumps(array_dtype_summary(train_state.opt_state), sort_keys=True)
     )
     logging.info("Trainable paths: %s", list(trainable.flat_state()))
     gradient_paths = [jax.tree_util.keystr(p) for p, _ in jax.tree_util.tree_flatten_with_path(trainable)[0]]
@@ -436,7 +488,13 @@ def main(config: _config.TrainConfig):
 
         checkpoint_step, periodic_save = checkpoint_step_and_due(config, step, start_step)
         if periodic_save or step == config.num_train_steps - 1:
-            _checkpoints.save_state(checkpoint_manager, train_state, data_loader, checkpoint_step)
+            _checkpoints.save_state(
+                checkpoint_manager,
+                train_state,
+                data_loader,
+                checkpoint_step,
+                wait_until_finished=config.wait_for_checkpoint_on_save,
+            )
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()

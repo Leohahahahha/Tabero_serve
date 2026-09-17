@@ -139,6 +139,9 @@ def control_loop(source, policy, robot, config, *, execute, duration, stopped, l
                         "requested_action_steps": config["actions_per_inference"],
                         "observation_state": chunk.observation_state.tolist(),
                         "actions": chunk.actions.tolist(),
+                        "predicted_wrist_wrench": (
+                            None if chunk.wrist_wrench is None else chunk.wrist_wrench.tolist()
+                        ),
                     }
                 )
                 + "\n"

@@ -191,7 +191,6 @@ def validate_metadata(metadata, *, use_tactile, conversion_sha256):
         "dataset_fps": 10,
         "use_tactile": use_tactile,
         "conversion_sha256": conversion_sha256,
-        "predicts_wrench": False,
     }
     if use_tactile:
         expected.update(
@@ -205,6 +204,20 @@ def validate_metadata(metadata, *, use_tactile, conversion_sha256):
     for key, value in expected.items():
         if metadata.get(key) != value:
             raise ValueError(f"Server metadata mismatch: {key}={metadata.get(key)!r}, expected {value!r}")
+    predicts_wrench = metadata.get("predicts_wrench")
+    if not isinstance(predicts_wrench, bool):
+        raise ValueError("Server metadata mismatch: predicts_wrench must be bool")
+    if predicts_wrench:
+        wrench_expected = {
+            "prediction_layout": "7d_action_then_6d_wrist_wrench",
+            "wrist_wrench_dim": 6,
+            "wrist_wrench_order": ["force_x", "force_y", "force_z", "torque_x", "torque_y", "torque_z"],
+            "wrist_wrench_units": ["N", "N", "N", "N_m", "N_m", "N_m"],
+            "wrist_wrench_frame": "K",
+        }
+        for key, value in wrench_expected.items():
+            if metadata.get(key) != value:
+                raise ValueError(f"Server metadata mismatch: {key}={metadata.get(key)!r}, expected {value!r}")
 
 
 @dataclass(frozen=True)
@@ -219,6 +232,7 @@ class Chunk:
     actions: np.ndarray
     observation_time: float
     observation_state: np.ndarray
+    wrist_wrench: np.ndarray | None = None
 
 
 def action_distance_metrics(left, right):

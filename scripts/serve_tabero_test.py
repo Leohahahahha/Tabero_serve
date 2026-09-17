@@ -10,14 +10,23 @@ from scripts import serve_tabero
 
 
 @pytest.mark.parametrize(
-    ("name", "use_tactile", "asset_id"),
+    ("name", "use_tactile", "predicts_wrench", "target_dim", "asset_id"),
     [
-        ("pi0_lora_tacfield_local_tactile_lora_smoke", True, "local/tabero_lerobot_compact_v1"),
-        ("pi0_lora_tabero_v3_touch_20k", True, "local/tabero_lerobot_compact_v3"),
-        ("pi0_lora_tabero_rgb_state", False, "local/tabero_lerobot_compact_v1"),
+        ("pi0_lora_tacfield_local_tactile_lora_smoke", True, False, 7, "local/tabero_lerobot_compact_v1"),
+        ("pi0_lora_tabero_v3_touch_20k", True, False, 7, "local/tabero_lerobot_compact_v3"),
+        ("pi0_lora_tabero_rgb_state", False, False, 7, "local/tabero_lerobot_compact_v1"),
+        (
+            "pi0_lora_tabero_whiteboard_next_state_force_20k",
+            True,
+            True,
+            13,
+            "local/test2_tabero_next_state_compact",
+        ),
     ],
 )
-def test_server_uses_moved_checkpoint_assets_and_strict_restore(monkeypatch, tmp_path, name, use_tactile, asset_id):
+def test_server_uses_moved_checkpoint_assets_and_strict_restore(
+    monkeypatch, tmp_path, name, use_tactile, predicts_wrench, target_dim, asset_id
+):
     from openpi import transforms
     from openpi.policies import policy_config
     from openpi.shared import normalize
@@ -27,7 +36,7 @@ def test_server_uses_moved_checkpoint_assets_and_strict_restore(monkeypatch, tmp
     (checkpoint / "params").mkdir(parents=True)
     stats = {
         "state": transforms.NormStats(mean=np.zeros(7), std=np.ones(7)),
-        "actions": transforms.NormStats(mean=np.zeros(7), std=np.ones(7)),
+        "actions": transforms.NormStats(mean=np.zeros(target_dim), std=np.ones(target_dim)),
         "tactile_prefix": transforms.NormStats(mean=np.zeros(396), std=np.ones(396)),
     }
     normalize.save(checkpoint / "assets" / asset_id, stats)
@@ -47,6 +56,7 @@ def test_server_uses_moved_checkpoint_assets_and_strict_restore(monkeypatch, tmp
     assert calls["config"].data.assets.assets_dir == str(checkpoint / "assets")
     assert calls["kwargs"] == {"sample_kwargs": {"num_steps": 10}, "strict_params": True}
     assert metadata["use_tactile"] is use_tactile
+    assert metadata["predicts_wrench"] is predicts_wrench
     assert metadata["asset_id"] == asset_id
     assert metadata["action_horizon"] == 50
     assert metadata["conversion_sha256"] == hashlib.sha256(conversion.read_bytes()).hexdigest()

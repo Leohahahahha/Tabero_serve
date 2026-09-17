@@ -38,6 +38,25 @@ Filter: TypeAlias = nnx.filterlib.Filter
 
 
 @dataclasses.dataclass(frozen=True)
+class ParameterDtypeRule:
+    """Override the storage dtype of trainable parameters whose full path matches a regex."""
+
+    path_regex: str
+    dtype: Literal["bfloat16", "float32"]
+
+
+@dataclasses.dataclass(frozen=True)
+class ParameterDtypePolicy:
+    """Config-owned storage policy for parameters, gradients and optimizer state."""
+
+    name: str
+    default_trainable_dtype: Literal["bfloat16", "float32"]
+    overrides: tuple[ParameterDtypeRule, ...] = ()
+    gradient_dtype: Literal["match_parameter", "float32"] = "match_parameter"
+    optimizer_state_dtype: Literal["match_parameter", "float32"] = "match_parameter"
+
+
+@dataclasses.dataclass(frozen=True)
 class AssetsConfig:
     """Determines the location of assets (e.g., norm stats) that will be used to set up the data pipeline.
 
@@ -357,7 +376,7 @@ class LeRobotLiberoTactileDataConfig(DataConfigFactory):
 
         data_transforms = _transforms.Group(
             inputs=[libero_policy.LiberoInputs(model_type=model_config.model_type)],
-            outputs=[libero_policy.LiberoForceOutputs()]
+            outputs=[libero_policy.LiberoForceOutputs()],
         )
 
         if self.extra_delta_transform:
@@ -433,7 +452,9 @@ class TaberoTacFieldDataConfig(DataConfigFactory):
         input_type = libero_policy.TaberoActionOnlyInputs if self.action_only else libero_policy.TaberoTacFieldInputs
         data_transforms = _transforms.Group(
             inputs=[input_type(model_type=model_config.model_type)],
-            outputs=[libero_policy.TaberoActionOnlyOutputs() if self.action_only else libero_policy.LiberoForceOutputs()],
+            outputs=[
+                libero_policy.TaberoActionOnlyOutputs() if self.action_only else libero_policy.LiberoForceOutputs()
+            ],
         )
 
         if self.extra_delta_transform:
@@ -459,6 +480,41 @@ class TaberoTacFieldDataConfig(DataConfigFactory):
             self.create_base_config(assets_dirs, model_config),
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoTacFieldWrenchDataConfig(DataConfigFactory):
+    """Marker-motion input with a 13D ``7D action + 6D wrist_wrench`` target."""
+
+    extra_delta_transform: bool = True
+    use_so3_relative_actions: bool = False
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[libero_policy.TaberoActionWrenchInputs(model_type=model_config.model_type)],
+            outputs=[libero_policy.TaberoActionWrenchOutputs()],
+        )
+        if self.extra_delta_transform:
+            if self.use_so3_relative_actions:
+                data_transforms = data_transforms.push(
+                    inputs=[_transforms.RelativePoseActions()],
+                    outputs=[_transforms.AbsolutePoseActions()],
+                )
+            else:
+                delta_action_mask = _transforms.make_bool_mask(6, -1)
+                data_transforms = data_transforms.push(
+                    inputs=[_transforms.DeltaActions(delta_action_mask)],
+                    outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+                )
+        elif self.use_so3_relative_actions:
+            raise ValueError("SO(3) relative actions require extra_delta_transform=True")
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=ModelTransformFactory()(model_config),
         )
 
 
@@ -588,7 +644,9 @@ class TaberoNoTactNoForceDataConfig(DataConfigFactory):
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
-        input_type = libero_policy.TaberoNoTactActionOnlyInputs if self.action_only else libero_policy.TaberoNoTactInputs
+        input_type = (
+            libero_policy.TaberoNoTactActionOnlyInputs if self.action_only else libero_policy.TaberoNoTactInputs
+        )
         data_transforms = _transforms.Group(
             inputs=[
                 # Image stream mapping and masking behavior.
@@ -738,6 +796,9 @@ class TrainConfig:
 
     # Specifies which weights should be frozen.
     freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
+    # Optional storage-dtype policy for trainable parameters. Optimizer moments inherit these dtypes.
+    # None preserves the legacy behavior (trainable parameters remain at their model initialization dtype).
+    parameter_dtype_policy: tyro.conf.Suppress[ParameterDtypePolicy | None] = None
 
     # Determines the data to be trained on.
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
@@ -766,6 +827,9 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+    # If true, block training after every save until Orbax has atomically
+    # finalized the checkpoint. The manager still uses its async signal protocol.
+    wait_for_checkpoint_on_save: bool = False
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -1119,7 +1183,8 @@ _CONFIGS = [
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             discrete_state_input=True,
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
         ema_decay=None,
     ),
@@ -1170,7 +1235,8 @@ _CONFIGS = [
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             discrete_state_input=True,
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
         ema_decay=None,
     ),
@@ -1222,7 +1288,8 @@ _CONFIGS = [
         freeze_filter=pi0_config.Pi0Config(
             pi05=True,
             discrete_state_input=True,
-            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora",
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
         ).get_freeze_filter(),
         ema_decay=None,
     ),
@@ -1523,7 +1590,6 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
     ),
-
     TrainConfig(
         name="pi05_libero",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
@@ -1546,7 +1612,6 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     #
-
     #
     # RoboArena configs.
     #
@@ -1555,96 +1620,110 @@ _CONFIGS = [
 
 # Small local action-only continuation; original published configs remain unchanged.
 _tabero_pretrained = next(c for c in _CONFIGS if c.name == "pi0_lora_tacfield_tabero")
-_CONFIGS.append(dataclasses.replace(
-    _tabero_pretrained,
-    name="pi0_lora_tacfield_local_smoke",
-    model=dataclasses.replace(
-        _tabero_pretrained.model,
-        supervised_action_dim=7,
-        tactile_loss_weight=0.0,
-        padding_loss_weight=0.0,
-    ),
-    data=TaberoTacFieldDataConfig(
-        repo_id="local/tabero_lerobot_compact_v1",
-        base_config=DataConfig(
-            root="/data/yanghaojun/datasets/tabero_lerobot_compact_v1",
-            # Fixed episode split, interspersed through acquisition order, not random frames.
-            episodes=tuple(i for i in range(29) if i not in (4, 14, 24)),
-            validation_episodes=(4, 14, 24),
-            video_backend="pyav",
-            columns=("state", "actions", "tactile_marker_motion", "timestamp", "frame_index",
-                     "episode_index", "index", "task_index"),
-            prompt_from_task=True,
+_CONFIGS.append(
+    dataclasses.replace(
+        _tabero_pretrained,
+        name="pi0_lora_tacfield_local_smoke",
+        model=dataclasses.replace(
+            _tabero_pretrained.model,
+            supervised_action_dim=7,
+            tactile_loss_weight=0.0,
+            padding_loss_weight=0.0,
         ),
-        action_only=True,
-        extra_delta_transform=True,
-    ),
-    weight_loader=weight_loaders.CheckpointWeightLoader(
-        "/data/yanghaojun/checkpoints/tabero-pretrained/checkpoints/"
-        "pi0_lora_tacfield_tabero/pi0_lora_tacfield_tabero/49999/params",
-        missing_regex="(?!)",  # No random fallback, including missing LoRA/tactile leaves.
-        strict=True,
-    ),
-    freeze_filter=nnx.Not(nnx_utils.PathRegex(".*lora.*")),
-    batch_size=2,
-    num_workers=2,
-    num_train_steps=100,
-    log_interval=10,
-    eval_interval=50,
-    eval_num_batches=12,
-    save_interval=100,
-    keep_period=None,
-    wandb_enabled=False,
-    policy_metadata={
-        "robot": "franka_fr3",
-        "deployment_target": "real_robot",
-        "action_representation": "absolute_xyz_axis_angle_single_finger_m",
-        "action_dim": 7,
-        "dataset_fps": 10,
-        "tactile_input": "rolling_9x198x2_marker_coordinates_left_then_right",
-        "tactile_marker_shape": [9, 198, 2],
-        "tactile_marker_dtype": "float32",
-        "tactile_marker_layout": "reference_then_8_history_frames_left_then_right",
-        "predicts_wrench": False,
-        "robot_safety_validation_required": True,
-    },
-    checkpoint_base_dir="/data/yanghaojun/outputs/checkpoints",
-    assets_base_dir="/data/yanghaojun/outputs/assets",
-    lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=10, peak_lr=1e-5, decay_steps=100, decay_lr=1e-6),
-))
+        data=TaberoTacFieldDataConfig(
+            repo_id="local/tabero_lerobot_compact_v1",
+            base_config=DataConfig(
+                root="/data/yanghaojun/datasets/tabero_lerobot_compact_v1",
+                # Fixed episode split, interspersed through acquisition order, not random frames.
+                episodes=tuple(i for i in range(29) if i not in (4, 14, 24)),
+                validation_episodes=(4, 14, 24),
+                video_backend="pyav",
+                columns=(
+                    "state",
+                    "actions",
+                    "tactile_marker_motion",
+                    "timestamp",
+                    "frame_index",
+                    "episode_index",
+                    "index",
+                    "task_index",
+                ),
+                prompt_from_task=True,
+            ),
+            action_only=True,
+            extra_delta_transform=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/data/yanghaojun/checkpoints/tabero-pretrained/checkpoints/"
+            "pi0_lora_tacfield_tabero/pi0_lora_tacfield_tabero/49999/params",
+            missing_regex="(?!)",  # No random fallback, including missing LoRA/tactile leaves.
+            strict=True,
+        ),
+        freeze_filter=nnx.Not(nnx_utils.PathRegex(".*lora.*")),
+        batch_size=2,
+        num_workers=2,
+        num_train_steps=100,
+        log_interval=10,
+        eval_interval=50,
+        eval_num_batches=12,
+        save_interval=100,
+        keep_period=None,
+        wandb_enabled=False,
+        policy_metadata={
+            "robot": "franka_fr3",
+            "deployment_target": "real_robot",
+            "action_representation": "absolute_xyz_axis_angle_single_finger_m",
+            "action_dim": 7,
+            "dataset_fps": 10,
+            "tactile_input": "rolling_9x198x2_marker_coordinates_left_then_right",
+            "tactile_marker_shape": [9, 198, 2],
+            "tactile_marker_dtype": "float32",
+            "tactile_marker_layout": "reference_then_8_history_frames_left_then_right",
+            "predicts_wrench": False,
+            "robot_safety_validation_required": True,
+        },
+        checkpoint_base_dir="/data/yanghaojun/outputs/checkpoints",
+        assets_base_dir="/data/yanghaojun/outputs/assets",
+        lr_schedule=_optimizer.CosineDecaySchedule(warmup_steps=10, peak_lr=1e-5, decay_steps=100, decay_lr=1e-6),
+    )
+)
 
 # Sensor-adaptation variant. Only new tactile adapters may be absent from Tabero;
 # pretrained tactile kernels/biases and backbone LoRA must still be restored strictly.
 _tabero_local_smoke = next(c for c in _CONFIGS if c.name == "pi0_lora_tacfield_local_smoke")
-_CONFIGS.append(dataclasses.replace(
-    _tabero_local_smoke,
-    name="pi0_lora_tacfield_local_tactile_lora_smoke",
-    model=dataclasses.replace(
-        _tabero_local_smoke.model,
-        tactile_prefix_lora_rank=16,
-        tactile_prefix_lora_alpha=16.0,
-    ),
-    weight_loader=dataclasses.replace(
-        _tabero_local_smoke.weight_loader,
-        strict_allow_missing_regex=(
-            r"tactile_prefix_encoder/(blocks/block_[01]/kernels/kernel_[012]|"
-            r"blocks/block_0/residual_proj|out_proj)/lora_[ab]"
+_CONFIGS.append(
+    dataclasses.replace(
+        _tabero_local_smoke,
+        name="pi0_lora_tacfield_local_tactile_lora_smoke",
+        model=dataclasses.replace(
+            _tabero_local_smoke.model,
+            tactile_prefix_lora_rank=16,
+            tactile_prefix_lora_alpha=16.0,
         ),
-    ),
-    policy_metadata={
-        **_tabero_local_smoke.policy_metadata,
-        "tactile_adaptation": "tcn_lora",
-        "tactile_lora_rank": 16,
-        "tactile_lora_alpha": 16.0,
-    },
-))
+        weight_loader=dataclasses.replace(
+            _tabero_local_smoke.weight_loader,
+            strict_allow_missing_regex=(
+                r"tactile_prefix_encoder/(blocks/block_[01]/kernels/kernel_[012]|"
+                r"blocks/block_0/residual_proj|out_proj)/lora_[ab]"
+            ),
+        ),
+        policy_metadata={
+            **_tabero_local_smoke.policy_metadata,
+            "tactile_adaptation": "tcn_lora",
+            "tactile_lora_rank": 16,
+            "tactile_lora_alpha": 16.0,
+        },
+    )
+)
 
 # Matched local retraining profiles: start from published Tabero, NOT local smoke99/final2999.
 # Only reuse checkpoint2999's train-only normalization assets; no learned weights from that run.
-_tabero_comparison_assets = AssetsConfig(assets_dir=(
-    "/data/yanghaojun/outputs/checkpoints/pi0_lora_tacfield_local_tactile_lora_smoke/"
-    "real_fr3_recovery_20260903_112020/2999/assets"
-))
+_tabero_comparison_assets = AssetsConfig(
+    assets_dir=(
+        "/data/yanghaojun/outputs/checkpoints/pi0_lora_tacfield_local_tactile_lora_smoke/"
+        "real_fr3_recovery_20260903_112020/2999/assets"
+    )
+)
 _tabero_touch_comparison = dataclasses.replace(
     next(c for c in _CONFIGS if c.name == "pi0_lora_tacfield_local_tactile_lora_smoke"),
     name="pi0_lora_tabero_rgb_state_touch",
@@ -1729,42 +1808,394 @@ _tabero_v3_touch_20k = dataclasses.replace(
     },
 )
 _CONFIGS.append(_tabero_v3_touch_20k)
-_CONFIGS.append(dataclasses.replace(
-    _tabero_touch_comparison,
-    name="pi0_lora_tabero_rgb_state",
-    model=dataclasses.replace(
-        _tabero_touch_comparison.model,
-        tactile_type=TactileType.NO,
-        tactile_streams=(),
-        tactile_dim_in=0,
-        tactile_prefix_dim_in=0,
-        tactile_prefix_history=None,
-        tactile_prefix_lora_rank=0,
-    ),
-    data=TaberoNoTactNoForceDataConfig(
-        repo_id=_tabero_local_smoke.data.repo_id,
-        assets=_tabero_comparison_assets,
-        base_config=dataclasses.replace(
-            _tabero_local_smoke.data.base_config,
-            columns=tuple(k for k in _tabero_local_smoke.data.base_config.columns if k != "tactile_marker_motion"),
+
+# Paired whiteboard experiments. The observation rows and split are identical;
+# only the absolute action-label source differs. Keep independent asset IDs so
+# train-only action normalization can never leak across the comparison.
+_TABERO_WHITEBOARD_TASK = (
+    "Pick up the yellow whiteboard eraser and use it to erase the black X mark from the whiteboard."
+)
+_TABERO_WHITEBOARD_VALIDATION_EPISODES = (1, 7, 17)
+
+
+def _make_tabero_whiteboard_config(
+    *,
+    name: str,
+    dataset_name: str,
+    action_source_mode: str,
+    action_label_source: str,
+    action_state_step_offset: int,
+    tactile_lora_rank: int = 16,
+    tactile_lora_alpha: float = 16.0,
+    batch_size: int = 4,
+    num_train_steps: int = 20_000,
+    wait_for_checkpoint_on_save: bool = False,
+) -> TrainConfig:
+    return dataclasses.replace(
+        _tabero_v3_touch_20k,
+        name=name,
+        model=dataclasses.replace(
+            _tabero_v3_touch_20k.model,
+            supervised_action_dim=None,
+            tactile_loss_weight=TACTILE_LOSS_WEIGHT,
+            padding_loss_weight=0.0,
+            tactile_prefix_lora_rank=tactile_lora_rank,
+            tactile_prefix_lora_alpha=tactile_lora_alpha,
         ),
-        action_only=True,
-        extra_delta_transform=True,
-    ),
-    weight_loader=dataclasses.replace(
-        _tabero_local_smoke.weight_loader,
-        strict_allow_extra_regex=(
-            r"tactile_prefix_encoder/(blocks/block_[01]/kernels/kernel_[012]|"
-            r"blocks/block_0/residual_proj|out_proj)/(kernel|bias)"
+        data=TaberoTacFieldWrenchDataConfig(
+            repo_id=f"local/{dataset_name}",
+            base_config=DataConfig(
+                root=f"/data/yanghaojun/datasets/{dataset_name}",
+                episodes=tuple(i for i in range(39) if i not in _TABERO_WHITEBOARD_VALIDATION_EPISODES),
+                validation_episodes=_TABERO_WHITEBOARD_VALIDATION_EPISODES,
+                video_backend="pyav",
+                columns=(
+                    "state",
+                    "actions",
+                    "wrist_wrench",
+                    "tactile_marker_motion",
+                    "timestamp",
+                    "frame_index",
+                    "episode_index",
+                    "index",
+                    "task_index",
+                ),
+                action_sequence_keys=("actions", "wrist_wrench"),
+                prompt_from_task=True,
+            ),
+            extra_delta_transform=True,
+            use_so3_relative_actions=True,
         ),
+        # Three seeded validation episodes contain 1,001 frames. Evaluate the
+        # same 1,000 full-batch frames for both action-label definitions.
+        batch_size=batch_size,
+        num_train_steps=num_train_steps,
+        eval_num_batches=1_000 // batch_size,
+        save_interval=4_000,
+        keep_period=4_000,
+        wait_for_checkpoint_on_save=wait_for_checkpoint_on_save,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-5,
+            decay_steps=num_train_steps,
+            decay_lr=1e-6,
+        ),
+        policy_metadata={
+            **_tabero_local_smoke.policy_metadata,
+            "dataset_version": dataset_name,
+            "experiment_pair": "test2_whiteboard_action_source_ab",
+            "action_source_mode": action_source_mode,
+            "action_label_source": action_label_source,
+            "action_state_step_offset": action_state_step_offset,
+            "training_action_representation": "relative_xyz_so3_rotvec_absolute_gripper",
+            "prediction_layout": "7d_action_then_6d_wrist_wrench",
+            "output_action_dim": 7,
+            "wrist_wrench_dim": 6,
+            "predicts_wrench": True,
+            "wrist_wrench_order": ["force_x", "force_y", "force_z", "torque_x", "torque_y", "torque_z"],
+            "wrist_wrench_target_alignment": "same_dataset_row_as_action_target",
+            "wrist_wrench_source": "synchronized_robot_force_plus_robot_torque",
+            "wrist_wrench_units": ["N", "N", "N", "N_m", "N_m", "N_m"],
+            "wrist_wrench_frame": "K",
+            "wrist_wrench_contract_source": "user_confirmed_2026-09-15",
+            "wrist_wrench_loss_weight": TACTILE_LOSS_WEIGHT,
+            "terminal_source_frame_omitted": True,
+            "dataset_timing_policy": "compact",
+            "dataset_missing_candidate_steps": 98,
+            "validation_split_seed": 42,
+            "validation_episode_ids": list(_TABERO_WHITEBOARD_VALIDATION_EPISODES),
+            "tactile_adaptation": "tcn_lora",
+            "tactile_lora_rank": tactile_lora_rank,
+            "tactile_lora_alpha": tactile_lora_alpha,
+            "checkpoint_mode": "wait_after_each_save" if wait_for_checkpoint_on_save else "async",
+            "task_prompt": _TABERO_WHITEBOARD_TASK,
+        },
+    )
+
+
+_TABERO_FULL_FP32_PARAMETER_POLICY = ParameterDtypePolicy(
+    name="full_float32",
+    default_trainable_dtype="float32",
+)
+
+_TABERO_MIXED_BF16_PARAMETER_POLICY = ParameterDtypePolicy(
+    name="mixed_bfloat16",
+    default_trainable_dtype="bfloat16",
+    overrides=(
+        # Keep normalization affine parameters in FP32 for numerical stability.
+        ParameterDtypeRule(r"(?i).*norm.*/(?:bias|scale)", "float32"),
+        # Vision patch/input embedding remains FP32; the rest of the vision transformer defaults to BF16.
+        ParameterDtypeRule(r"PaliGemma/img/embedding/.*", "float32"),
+        # State/action projections, time MLPs, and the action output head remain FP32.
+        ParameterDtypeRule(
+            r"(?:state_proj|action_in_proj|action_out_proj|action_time_mlp_in|action_time_mlp_out|time_mlp_in|time_mlp_out)/.*",
+            "float32",
+        ),
+        # First mixed-precision version deliberately keeps the sensor-specific tactile encoder in FP32.
+        ParameterDtypeRule(r"tactile(?:_prefix)?_encoder/.*", "float32"),
     ),
-    policy_metadata={
-        **_tabero_local_smoke.policy_metadata,
-        "tactile_input": "none",
-        "tactile_adaptation": "none",
-        "tactile_lora_rank": 0,
-    },
-))
+)
+
+_TABERO_MIXED_BF16_FP32_TRAIN_STATE_POLICY = dataclasses.replace(
+    _TABERO_MIXED_BF16_PARAMETER_POLICY,
+    name="mixed_bfloat16_fp32_train_state",
+    gradient_dtype="float32",
+    optimizer_state_dtype="float32",
+)
+
+
+def _make_tabero_whiteboard_full_finetune_config(
+    *,
+    name: str,
+    dataset_name: str,
+    action_source_mode: str,
+    action_label_source: str,
+    action_state_step_offset: int,
+    parameter_dtype_policy: ParameterDtypePolicy = _TABERO_FULL_FP32_PARAMETER_POLICY,
+    peak_lr: float = 2e-6,
+    decay_lr: float = 2e-7,
+) -> TrainConfig:
+    """Build a strict Tabero-49999 full-parameter whiteboard config.
+
+    The released checkpoint already contains backbone LoRA leaves, so its
+    architecture is preserved. Unlike the adapter experiments, every leaf is
+    trainable and no new tactile LoRA leaves are added: the pretrained tactile
+    TCN itself is updated.
+    """
+    base = _make_tabero_whiteboard_config(
+        name=name,
+        dataset_name=dataset_name,
+        action_source_mode=action_source_mode,
+        action_label_source=action_label_source,
+        action_state_step_offset=action_state_step_offset,
+        tactile_lora_rank=0,
+        batch_size=2,
+        num_train_steps=12_000,
+        wait_for_checkpoint_on_save=True,
+    )
+    return dataclasses.replace(
+        base,
+        # Strictly restore the exact released architecture, without randomly
+        # initialized tactile adapters.
+        weight_loader=_tabero_local_smoke.weight_loader,
+        freeze_filter=nnx.Nothing,
+        parameter_dtype_policy=parameter_dtype_policy,
+        optimizer=_optimizer.AdamW(moment_dtype=parameter_dtype_policy.optimizer_state_dtype),
+        ema_decay=None,
+        fsdp_devices=2,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=peak_lr,
+            decay_steps=12_000,
+            decay_lr=decay_lr,
+        ),
+        policy_metadata={
+            **base.policy_metadata,
+            "optimization_method": "full_parameter_finetuning",
+            "trainable_scope": "all_parameter_leaves",
+            "pretrained_architecture": "tabero_49999_with_backbone_lora",
+            "tactile_adaptation": "full_tcn_and_all_model_parameters",
+            "tactile_lora_rank": 0,
+            "tactile_lora_alpha": None,
+            "parameter_dtype_policy": parameter_dtype_policy.name,
+            "loss_reduction_dtype": "float32",
+            "gradient_storage_dtype": parameter_dtype_policy.gradient_dtype,
+            "gradient_cast_stage": (
+                "after_autodiff_before_clipping_and_optimizer"
+                if parameter_dtype_policy.gradient_dtype == "float32"
+                else "none"
+            ),
+            "gradient_norm_and_clipping_dtype": "float32",
+            "optimizer_state_dtype": parameter_dtype_policy.optimizer_state_dtype,
+            "peak_lr": peak_lr,
+            "decay_lr": decay_lr,
+            "fsdp_devices": 2,
+            "global_batch_size": 2,
+        },
+    )
+
+
+def _make_tabero_whiteboard_full_finetune_sgd_config(
+    *,
+    name: str,
+    dataset_name: str,
+    action_source_mode: str,
+    action_label_source: str,
+    action_state_step_offset: int,
+) -> TrainConfig:
+    """Use no optimizer-sized tensors when two-device full AdamW does not fit."""
+    base = _make_tabero_whiteboard_full_finetune_config(
+        name=name,
+        dataset_name=dataset_name,
+        action_source_mode=action_source_mode,
+        action_label_source=action_label_source,
+        action_state_step_offset=action_state_step_offset,
+    )
+    return dataclasses.replace(
+        base,
+        optimizer=_optimizer.StatelessSGD(clip_gradient_norm=1.0),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-5,
+            decay_steps=12_000,
+            decay_lr=1e-6,
+        ),
+        policy_metadata={
+            **base.policy_metadata,
+            "optimizer": "stateless_sgd",
+            "optimizer_state_strategy": "no_momentum_or_second_moment_tensors",
+        },
+    )
+
+
+_CONFIGS.extend(
+    [
+        _make_tabero_whiteboard_config(
+            name="pi0_lora_tabero_whiteboard_next_state_force_20k",
+            dataset_name="test2_tabero_next_state_compact",
+            action_source_mode="next-state",
+            action_label_source="next_observation_state_within_episode",
+            action_state_step_offset=1,
+        ),
+        _make_tabero_whiteboard_config(
+            name="pi0_lora_tabero_whiteboard_sent_command_force_20k",
+            dataset_name="test2_tabero_sent_command_compact",
+            action_source_mode="sent-command",
+            action_label_source="synchronized_absolute_sent_command_current_frame",
+            action_state_step_offset=0,
+        ),
+        _make_tabero_whiteboard_config(
+            name="pi0_lora_tabero_whiteboard_next_state_force_tactile_r32_12k",
+            dataset_name="test2_tabero_next_state_compact",
+            action_source_mode="next-state",
+            action_label_source="next_observation_state_within_episode",
+            action_state_step_offset=1,
+            tactile_lora_rank=32,
+            tactile_lora_alpha=32.0,
+            batch_size=2,
+            num_train_steps=12_000,
+            wait_for_checkpoint_on_save=True,
+        ),
+        _make_tabero_whiteboard_config(
+            name="pi0_lora_tabero_whiteboard_sent_command_force_tactile_r32_12k",
+            dataset_name="test2_tabero_sent_command_compact",
+            action_source_mode="sent-command",
+            action_label_source="synchronized_absolute_sent_command_current_frame",
+            action_state_step_offset=0,
+            tactile_lora_rank=32,
+            tactile_lora_alpha=32.0,
+            batch_size=2,
+            num_train_steps=12_000,
+            wait_for_checkpoint_on_save=True,
+        ),
+        _make_tabero_whiteboard_full_finetune_config(
+            name="pi0_tabero_whiteboard_next_state_force_full_ft_12k",
+            dataset_name="test2_tabero_next_state_compact",
+            action_source_mode="next-state",
+            action_label_source="next_observation_state_within_episode",
+            action_state_step_offset=1,
+        ),
+        _make_tabero_whiteboard_full_finetune_config(
+            name="pi0_tabero_whiteboard_sent_command_force_full_ft_12k",
+            dataset_name="test2_tabero_sent_command_compact",
+            action_source_mode="sent-command",
+            action_label_source="synchronized_absolute_sent_command_current_frame",
+            action_state_step_offset=0,
+        ),
+        _make_tabero_whiteboard_full_finetune_config(
+            name="pi0_tabero_whiteboard_next_state_force_full_ft_mixed_bf16_adamw_12k",
+            dataset_name="test2_tabero_next_state_compact",
+            action_source_mode="next-state",
+            action_label_source="next_observation_state_within_episode",
+            action_state_step_offset=1,
+            parameter_dtype_policy=_TABERO_MIXED_BF16_FP32_TRAIN_STATE_POLICY,
+            peak_lr=2e-5,
+            decay_lr=2e-6,
+        ),
+        _make_tabero_whiteboard_full_finetune_config(
+            name="pi0_tabero_whiteboard_sent_command_force_full_ft_mixed_bf16_adamw_12k",
+            dataset_name="test2_tabero_sent_command_compact",
+            action_source_mode="sent-command",
+            action_label_source="synchronized_absolute_sent_command_current_frame",
+            action_state_step_offset=0,
+            parameter_dtype_policy=_TABERO_MIXED_BF16_FP32_TRAIN_STATE_POLICY,
+            peak_lr=2e-5,
+            decay_lr=2e-6,
+        ),
+        _make_tabero_whiteboard_full_finetune_config(
+            name="pi0_tabero_whiteboard_next_state_force_full_ft_mixed_bf16_lowmem_adamw_12k",
+            dataset_name="test2_tabero_next_state_compact",
+            action_source_mode="next-state",
+            action_label_source="next_observation_state_within_episode",
+            action_state_step_offset=1,
+            parameter_dtype_policy=_TABERO_MIXED_BF16_PARAMETER_POLICY,
+            peak_lr=2e-5,
+            decay_lr=2e-6,
+        ),
+        _make_tabero_whiteboard_full_finetune_config(
+            name="pi0_tabero_whiteboard_sent_command_force_full_ft_mixed_bf16_lowmem_adamw_12k",
+            dataset_name="test2_tabero_sent_command_compact",
+            action_source_mode="sent-command",
+            action_label_source="synchronized_absolute_sent_command_current_frame",
+            action_state_step_offset=0,
+            parameter_dtype_policy=_TABERO_MIXED_BF16_PARAMETER_POLICY,
+            peak_lr=2e-5,
+            decay_lr=2e-6,
+        ),
+        _make_tabero_whiteboard_full_finetune_sgd_config(
+            name="pi0_tabero_whiteboard_next_state_force_full_ft_sgd_12k",
+            dataset_name="test2_tabero_next_state_compact",
+            action_source_mode="next-state",
+            action_label_source="next_observation_state_within_episode",
+            action_state_step_offset=1,
+        ),
+        _make_tabero_whiteboard_full_finetune_sgd_config(
+            name="pi0_tabero_whiteboard_sent_command_force_full_ft_sgd_12k",
+            dataset_name="test2_tabero_sent_command_compact",
+            action_source_mode="sent-command",
+            action_label_source="synchronized_absolute_sent_command_current_frame",
+            action_state_step_offset=0,
+        ),
+    ]
+)
+_CONFIGS.append(
+    dataclasses.replace(
+        _tabero_touch_comparison,
+        name="pi0_lora_tabero_rgb_state",
+        model=dataclasses.replace(
+            _tabero_touch_comparison.model,
+            tactile_type=TactileType.NO,
+            tactile_streams=(),
+            tactile_dim_in=0,
+            tactile_prefix_dim_in=0,
+            tactile_prefix_history=None,
+            tactile_prefix_lora_rank=0,
+        ),
+        data=TaberoNoTactNoForceDataConfig(
+            repo_id=_tabero_local_smoke.data.repo_id,
+            assets=_tabero_comparison_assets,
+            base_config=dataclasses.replace(
+                _tabero_local_smoke.data.base_config,
+                columns=tuple(k for k in _tabero_local_smoke.data.base_config.columns if k != "tactile_marker_motion"),
+            ),
+            action_only=True,
+            extra_delta_transform=True,
+        ),
+        weight_loader=dataclasses.replace(
+            _tabero_local_smoke.weight_loader,
+            strict_allow_extra_regex=(
+                r"tactile_prefix_encoder/(blocks/block_[01]/kernels/kernel_[012]|"
+                r"blocks/block_0/residual_proj|out_proj)/(kernel|bias)"
+            ),
+        ),
+        policy_metadata={
+            **_tabero_local_smoke.policy_metadata,
+            "tactile_input": "none",
+            "tactile_adaptation": "none",
+            "tactile_lora_rank": 0,
+        },
+    )
+)
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
     raise ValueError("Config names must be unique.")

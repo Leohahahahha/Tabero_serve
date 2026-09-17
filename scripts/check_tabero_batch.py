@@ -33,8 +33,9 @@ def main():
         if observation.tactile_prefix.shape != (config.batch_size, 9, 396):
             raise ValueError(f"Unexpected tactile shape: {observation.tactile_prefix.shape}")
         if observation.tactile_suffix is not None:
-            raise ValueError("Action-only tacfield configuration must not load a tactile suffix")
-        if np.any(np.asarray(actions)[..., 7:] != 0):
+            raise ValueError("Marker-field configuration must not load a tactile suffix")
+        supervised_dim = 13 if (config.policy_metadata or {}).get("predicts_wrench") else 7
+        if np.any(np.asarray(actions)[..., supervised_dim:] != 0):
             raise ValueError("Unlabeled action slots must be zero padded")
         summary = {"split": split, "episodes": loader.data_config().episodes, "tensors": {}}
         tree = {"observation": observation.to_dict(), "actions": actions}

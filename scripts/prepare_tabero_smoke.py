@@ -1,10 +1,12 @@
 """Read-only dataset audit and train-only normalization for a local Tabero config.
 
-Does not decode unused depth/wrench columns or modify original metadata/labels.
+Reads wrist wrench only when the selected policy predicts it. Never modifies the
+original metadata or labels.
 Run with JAX_PLATFORMS=cpu. Reports are written only to --output-dir.
 """
 
 import argparse
+import dataclasses
 import json
 import pathlib
 import subprocess
@@ -29,18 +31,43 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="pi0_lora_tacfield_local_smoke")
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--assets-base-dir", type=pathlib.Path)
     args = parser.parse_args()
     config = configs.get_config(args.config)
+    if args.assets_base_dir is not None:
+        config = dataclasses.replace(config, assets_base_dir=str(args.assets_base_dir))
     data = config.data.base_config
     root = pathlib.Path(data.root)
     info = json.loads((root / "meta/info.json").read_text())
     conversion = json.loads((root / "meta/tabero_conversion.json").read_text())
     episodes = [json.loads(line) for line in (root / "meta/episodes.jsonl").read_text().splitlines()]
+    policy_metadata = config.policy_metadata or {}
+    predicts_wrench = bool(policy_metadata.get("predicts_wrench", False))
+    if predicts_wrench:
+        wrench_feature = info.get("features", {}).get("wrist_wrench", {})
+        if wrench_feature.get("dtype") != "float32" or wrench_feature.get("shape") != [6]:
+            raise ValueError(f"Expected float32 wrist_wrench[6] metadata, got {wrench_feature}")
+        if tuple(data.action_sequence_keys) != ("actions", "wrist_wrench"):
+            raise ValueError("Wrench prediction requires action_sequence_keys=('actions', 'wrist_wrench')")
+    expected_action_source = policy_metadata.get("action_source_mode")
+    if expected_action_source is not None:
+        for source_name, metadata in (("info.json", info), ("tabero_conversion.json", conversion)):
+            actual = metadata.get("action_source_mode")
+            if actual != expected_action_source:
+                raise ValueError(f"{source_name} action_source_mode={actual!r}, expected {expected_action_source!r}")
+    expected_step_offset = policy_metadata.get("action_state_step_offset")
+    if expected_step_offset is not None and conversion.get("action_state_step_offset") != expected_step_offset:
+        raise ValueError(
+            "tabero_conversion.json action_state_step_offset="
+            f"{conversion.get('action_state_step_offset')!r}, expected {expected_step_offset!r}"
+        )
+    if info.get("total_episodes") != len(episodes):
+        raise ValueError("info.json total_episodes does not match episodes.jsonl")
     task_rows = [json.loads(line) for line in (root / "meta/tasks.jsonl").read_text().splitlines()]
     task_mapping = {int(row["task_index"]): row["task"] for row in task_rows}
     if len(task_mapping) != len(task_rows):
         raise ValueError("Duplicate task_index values in tasks.jsonl")
-    expected_prompt = (config.policy_metadata or {}).get("task_prompt")
+    expected_prompt = policy_metadata.get("task_prompt")
     if expected_prompt is not None and set(task_mapping.values()) != {expected_prompt}:
         raise ValueError(f"Task prompt does not match config policy metadata: {task_mapping}")
     train_ids, val_ids = set(data.episodes), set(data.validation_episodes)
@@ -52,23 +79,35 @@ def main():
         index, length = episode["episode_index"], episode["length"]
         chunk = index // info["chunks_size"]
         path = root / info["data_path"].format(episode_chunk=chunk, episode_index=index)
-        table = pq.read_table(
-            path,
-            columns=[
-                "state",
-                "actions",
-                "tactile_marker_motion",
-                "frame_index",
-                "episode_index",
-                "task_index",
-            ],
-        )
+        columns = [
+            "state",
+            "actions",
+            "tactile_marker_motion",
+            "frame_index",
+            "episode_index",
+            "task_index",
+        ]
+        if predicts_wrench:
+            columns.append("wrist_wrench")
+        table = pq.read_table(path, columns=columns)
         arrays = {key: np.asarray(table[key].to_pylist()) for key in table.column_names}
         state, actions, tactile = (arrays[key] for key in ("state", "actions", "tactile_marker_motion"))
         if state.shape != (length, 7) or actions.shape != (length, 7) or tactile.shape != (length, 9, 198, 2):
             raise ValueError(f"Episode {index}: invalid tensor dimensions")
         if not all(np.isfinite(x).all() for x in (state, actions, tactile)):
             raise ValueError(f"Episode {index}: non-finite data")
+        wrist_wrench = arrays.get("wrist_wrench")
+        if wrist_wrench is not None:
+            # PyArrow's ``to_pylist`` round-trip produces float64 NumPy arrays
+            # even when the Parquet fixed-size-list element type is float32.
+            wrist_wrench = wrist_wrench.astype(np.float32, copy=False)
+        if predicts_wrench and (
+            wrist_wrench is None
+            or wrist_wrench.shape != (length, 6)
+            or wrist_wrench.dtype != np.float32
+            or not np.isfinite(wrist_wrench).all()
+        ):
+            raise ValueError(f"Episode {index}: wrist_wrench must be finite float32 [{length},6]")
         if not np.array_equal(arrays["frame_index"].reshape(-1), np.arange(length)):
             raise ValueError(f"Episode {index}: frame index mismatch")
         if not np.all(arrays["episode_index"] == index):
@@ -127,9 +166,15 @@ def main():
             "initial_history_repeat_error": float(np.max(np.abs(tactile[0, 1:] - tactile[0, -1:]))),
             "videos": video_info,
         }
+        if wrist_wrench is not None:
+            report["wrist_wrench_min"] = wrist_wrench.min(axis=0).tolist()
+            report["wrist_wrench_max"] = wrist_wrench.max(axis=0).tolist()
         reports.append(report)
         if index in train_ids:
             targets = action_chunks(actions, config.model.action_horizon)
+            if predicts_wrench:
+                wrench_targets = action_chunks(wrist_wrench, config.model.action_horizon)
+                targets = np.concatenate((targets, wrench_targets), axis=-1)
             if config.data.extra_delta_transform:
                 if getattr(config.data, "use_so3_relative_actions", False):
                     targets = _transforms.RelativePoseActions()({"state": state, "actions": targets})["actions"]
@@ -153,8 +198,17 @@ def main():
         "train_frames": sum(r["length"] for r in reports if r["split"] == "train"),
         "validation_frames": sum(r["length"] for r in reports if r["split"] == "validation"),
         "action_horizon": config.model.action_horizon,
+        "prediction_layout": policy_metadata.get("prediction_layout", "7d_action_only"),
+        "predicts_wrench": predicts_wrench,
+        "wrist_wrench_target_alignment": policy_metadata.get("wrist_wrench_target_alignment"),
+        "wrist_wrench_units": policy_metadata.get("wrist_wrench_units"),
+        "wrist_wrench_frame": policy_metadata.get("wrist_wrench_frame"),
+        "wrist_wrench_contract_source": policy_metadata.get("wrist_wrench_contract_source"),
+        "wrist_wrench_loss_weight": policy_metadata.get("wrist_wrench_loss_weight"),
         "extra_delta_transform": config.data.extra_delta_transform,
         "use_so3_relative_actions": getattr(config.data, "use_so3_relative_actions", False),
+        "action_source_mode": conversion.get("action_source_mode"),
+        "action_state_step_offset": conversion.get("action_state_step_offset"),
         "timing_policy": conversion.get("timing_policy"),
         "compacted_episode_indices": conversion.get("compacted_source_episode_indices", []),
         "total_missing_candidate_steps": conversion.get("total_missing_candidate_steps", 0),
@@ -177,6 +231,7 @@ def main():
             "Compacted timing cannot reconstruct the missing sensor samples or their exact transition locations",
             "The real-robot 0.02 m/s guard is intentionally not used to clip expert training labels",
             "Rolling nine-frame tactile history; no reference subtraction",
+            "Wrist-wrench units/frame are a user-confirmed external contract, not declared in dataset metadata",
             "Training prompts come from tasks.jsonl via task_index; episodes.jsonl task strings are audit metadata",
             "Not robot success evaluation",
         ],

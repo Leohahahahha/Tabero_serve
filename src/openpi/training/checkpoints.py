@@ -67,6 +67,8 @@ def save_state(
     state: training_utils.TrainState,
     data_loader: _data_loader.DataLoader,
     step: int,
+    *,
+    wait_until_finished: bool = False,
 ):
     def save_assets(directory: epath.Path):
         # Save the normalization stats.
@@ -84,6 +86,10 @@ def save_state(
         "params": {"params": params},
     }
     checkpoint_manager.save(step, items)
+    if wait_until_finished:
+        logging.info("Waiting for checkpoint %d to finalize before continuing", step)
+        checkpoint_manager.wait_until_finished()
+        logging.info("Checkpoint %d finalized", step)
 
 
 def restore_state(
@@ -126,7 +132,15 @@ class CallbackHandler(ocp.AsyncCheckpointHandler):
             args.callback(directory)
 
     async def async_save(self, directory: epath.Path, args: CallbackSave) -> list[futures.Future]:
-        return [future.CommitFutureAwaitingContractedSignals(asyncio.to_thread(self.save, directory, args))]
+        # Resolve the JAX process decision on the current thread. Running
+        # jax.process_index() for the first time inside asyncio.to_thread can
+        # deadlock JAX initialization. The callback itself contains no JAX
+        # calls, but it must remain behind Orbax's contracted directory-creation
+        # signal; otherwise it can create the temporary item directory first
+        # and race Orbax with FileExistsError.
+        if jax.process_index() != 0:
+            return []
+        return [future.CommitFutureAwaitingContractedSignals(asyncio.to_thread(args.callback, directory))]
 
     def restore(self, *args, **kwargs):
         raise NotImplementedError("CallbackHandler does not support restore")

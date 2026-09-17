@@ -209,6 +209,25 @@ def test_remote_tactile_policy_rejects_bad_marker_before_send():
     assert sent == []
 
 
+def test_remote_force_policy_validates_and_preserves_predicted_wrench():
+    policy = object.__new__(transport.RemotePolicy)
+    policy.metadata = {"use_tactile": False, "action_horizon": 50, "predicts_wrench": True}
+    policy.timeout = 1
+    policy.ws = SimpleNamespace(send=lambda _: None)
+    policy.packer = SimpleNamespace(pack=lambda value: value)
+    actions = np.repeat(state()[None], 50, axis=0)
+    wrist_wrench = np.arange(50 * 6, dtype=np.float64).reshape(50, 6)
+    policy.receive = lambda timeout: {"actions": actions, "wrist_wrench": wrist_wrench}
+    sample = core.Sample({"state": state()}, 1.0, 1.0)
+    chunk = policy.infer(sample)
+    np.testing.assert_array_equal(chunk.actions, actions)
+    np.testing.assert_array_equal(chunk.wrist_wrench, wrist_wrench)
+
+    policy.receive = lambda timeout: {"actions": actions}
+    with pytest.raises(ValueError, match="wrist-wrench"):
+        policy.infer(sample)
+
+
 @pytest.mark.parametrize("mode", ["full", "shear_depth"])
 def test_real_ipc_pack_decode_parity(mode):
     arrays = {
@@ -305,6 +324,18 @@ def test_server_contract_rejects_wrong_modalities_or_conversion():
     wrong = {**meta, "tactile_marker_shape": [8, 198, 2]}
     with pytest.raises(ValueError, match="tactile_marker_shape"):
         core.validate_metadata(wrong, use_tactile=True, conversion_sha256="abc")
+    force = {
+        **meta,
+        "predicts_wrench": True,
+        "prediction_layout": "7d_action_then_6d_wrist_wrench",
+        "wrist_wrench_dim": 6,
+        "wrist_wrench_order": ["force_x", "force_y", "force_z", "torque_x", "torque_y", "torque_z"],
+        "wrist_wrench_units": ["N", "N", "N", "N_m", "N_m", "N_m"],
+        "wrist_wrench_frame": "K",
+    }
+    core.validate_metadata(force, use_tactile=True, conversion_sha256="abc")
+    with pytest.raises(ValueError, match="wrist_wrench_dim"):
+        core.validate_metadata({**force, "wrist_wrench_dim": 3}, use_tactile=True, conversion_sha256="abc")
 
 
 def test_live_config_uses_stream_specific_qos_and_url_overrides():

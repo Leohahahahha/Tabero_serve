@@ -36,6 +36,22 @@ def action_errors(prediction, target):
     }
 
 
+def wrench_errors(prediction, target):
+    """Return force/torque errors in their native physical units."""
+    prediction, target = np.broadcast_arrays(
+        np.asarray(prediction, dtype=np.float64), np.asarray(target, dtype=np.float64)
+    )
+    if prediction.shape[-1] != 6 or not np.isfinite((prediction, target)).all():
+        raise ValueError("Wrench metrics require finite [Fx,Fy,Fz,Tx,Ty,Tz] values")
+    difference = prediction - target
+    return {
+        "force_l2_n": np.linalg.norm(difference[..., :3], axis=-1),
+        "torque_l2_nm": np.linalg.norm(difference[..., 3:], axis=-1),
+        "force_component_mae_n": np.mean(np.abs(difference[..., :3]), axis=-1),
+        "torque_component_mae_nm": np.mean(np.abs(difference[..., 3:]), axis=-1),
+    }
+
+
 def distribution(values):
     values = np.asarray(values, dtype=np.float64).ravel()
     if not values.size:
@@ -107,7 +123,19 @@ def sampling_noise(seed, episode, frame, horizon, action_dim):
     return rng.standard_normal((horizon, action_dim)).astype(np.float32)
 
 
-def infer_anchor(policy, sample, *, episode, frame, length, horizon, action_dim, seed, use_tactile=True):
+def infer_anchor(
+    policy,
+    sample,
+    *,
+    episode,
+    frame,
+    length,
+    horizon,
+    action_dim,
+    seed,
+    use_tactile=True,
+    predict_wrench=False,
+):
     if int(np.asarray(sample["episode_index"]).item()) != episode:
         raise ValueError("Dataset episode ordering mismatch")
     if int(np.asarray(sample["frame_index"]).item()) != frame:
@@ -120,11 +148,12 @@ def infer_anchor(policy, sample, *, episode, frame, length, horizon, action_dim,
     state = observation["state"].astype(np.float64).copy()
     noise = sampling_noise(seed, episode, frame, horizon, action_dim)
     start = time.perf_counter()
-    prediction = np.asarray(policy.infer(observation, noise=noise)["actions"], dtype=np.float64)
+    output = policy.infer(observation, noise=noise)
+    prediction = np.asarray(output["actions"], dtype=np.float64)
     elapsed_ms = (time.perf_counter() - start) * 1000
     if prediction.shape != (horizon, 7) or not np.isfinite(prediction).all():
         raise ValueError("Policy returned wrong-shaped or non-finite actions; no clipping/replacement applied")
-    return {
+    record = {
         "episode": episode,
         "frame": frame,
         "prediction": prediction.copy(),
@@ -133,6 +162,21 @@ def infer_anchor(policy, sample, *, episode, frame, length, horizon, action_dim,
         "state": state,
         "policy_call_wall_ms": elapsed_ms,
     }
+    if predict_wrench:
+        wrench_target = np.asarray(sample["wrist_wrench"], dtype=np.float64).copy()
+        wrench_prediction = np.asarray(output["wrist_wrench"], dtype=np.float64)
+        if wrench_target.shape != (horizon, 6) or not np.isfinite(wrench_target).all():
+            raise ValueError("Expected finite raw wrist-wrench targets [horizon,6]")
+        if wrench_prediction.shape != (horizon, 6) or not np.isfinite(wrench_prediction).all():
+            raise ValueError("Policy returned wrong-shaped or non-finite wrist wrench")
+        wrench_padding = sample.get("wrist_wrench_is_pad")
+        if wrench_padding is not None and not np.array_equal(
+            np.asarray(wrench_padding), np.asarray(sample["actions_is_pad"])
+        ):
+            raise ValueError("Action and wrist-wrench padding disagree")
+        record["wrench_prediction"] = wrench_prediction.copy()
+        record["wrench_target"] = wrench_target
+    return record
 
 
 def summarize_records(records):
@@ -162,6 +206,26 @@ def summarize_records(records):
             for offset in range(pred.shape[1])
         ],
     }
+    if "wrench_prediction" in records[0]:
+        wrench_prediction = np.stack([r["wrench_prediction"] for r in records])
+        wrench_target = np.stack([r["wrench_target"] for r in records])
+        wrench_metrics = wrench_errors(wrench_prediction, wrench_target)
+        zero_wrench = wrench_errors(np.zeros_like(wrench_target), wrench_target)
+        result["wrist_wrench"] = {
+            "first_action": {key: distribution(value[:, 0]) for key, value in wrench_metrics.items()},
+            "valid_chunk": {key: distribution(value[valid]) for key, value in wrench_metrics.items()},
+            "zero_prediction_baseline": {
+                "first_action": {key: distribution(value[:, 0]) for key, value in zero_wrench.items()},
+                "valid_chunk": {key: distribution(value[valid]) for key, value in zero_wrench.items()},
+            },
+            "by_horizon": [
+                {
+                    "offset": offset,
+                    **{key: distribution(value[:, offset][valid[:, offset]]) for key, value in wrench_metrics.items()},
+                }
+                for offset in range(wrench_prediction.shape[1])
+            ],
+        }
     # Diagnostic thresholds, NOT a robot safety certificate. Do not clip predictions.
     gripper = pred[..., 6][valid]
     adjacency = valid[:, 1:] & valid[:, :-1]
@@ -214,6 +278,28 @@ def save_episode_plot(records, path):
     figure.savefig(path, dpi=140)
 
 
+def save_episode_wrench_plot(records, path):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.figure import Figure
+
+    frames = np.array([r["frame"] for r in records])
+    prediction = np.stack([r["wrench_prediction"][0] for r in records])
+    target = np.stack([r["wrench_target"][0] for r in records])
+    figure = Figure(figsize=(13, 10), layout="constrained")
+    FigureCanvasAgg(figure)
+    axes = figure.subplots(3, 2).ravel()
+    names = ("Fx (N)", "Fy (N)", "Fz (N)", "Tx (N m)", "Ty (N m)", "Tz (N m)")
+    for axis, index, name in zip(axes, range(6), names, strict=True):
+        axis.plot(frames, target[:, index], label="Recorded target")
+        axis.plot(frames, prediction[:, index], label="Predicted first wrench", alpha=0.8)
+        axis.set_ylabel(name)
+        axis.set_xlabel("Recorded episode frame (10 Hz compact timeline)")
+        axis.grid(alpha=0.2)
+    axes[0].legend(fontsize=8)
+    figure.suptitle(f"Episode {records[0]['episode']}: open-loop first-wrench comparison")
+    figure.savefig(path, dpi=140)
+
+
 def evaluate_dataset(
     policy,
     dataset,
@@ -227,6 +313,7 @@ def evaluate_dataset(
     max_frames_per_episode=0,
     make_plots=True,
     use_tactile=True,
+    predict_wrench=False,
 ):
     """Evaluate every selected anchor once; caller creates a fresh output directory."""
     output_dir = Path(output_dir)
@@ -235,11 +322,19 @@ def evaluate_dataset(
         raise ValueError("Dataset length disagrees with episode metadata")
     records = []
     columns = ["episode", "frame", "offset", "target_frame", "valid", "position_mm", "rotation_deg", "gripper_mm"]
+    if predict_wrench:
+        columns += ["force_l2_n", "torque_l2_nm", "force_component_mae_n", "torque_component_mae_nm"]
     columns += [
         f"{source}_{name}"
         for source in ("prediction", "target")
         for name in ("x_m", "y_m", "z_m", "rx_rad", "ry_rad", "rz_rad", "finger_m")
     ]
+    if predict_wrench:
+        columns += [
+            f"{source}_{name}"
+            for source in ("wrench_prediction", "wrench_target")
+            for name in ("fx_n", "fy_n", "fz_n", "tx_nm", "ty_nm", "tz_nm")
+        ]
     with (output_dir / "predictions.csv").open("x", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(columns)
@@ -255,6 +350,7 @@ def evaluate_dataset(
                     action_dim=action_dim,
                     seed=seed,
                     use_tactile=use_tactile,
+                    predict_wrench=predict_wrench,
                 )
             except Exception as exc:
                 failure = {
@@ -269,6 +365,7 @@ def evaluate_dataset(
                 raise
             records.append(record)
             errors = action_errors(record["prediction"], record["target"])
+            wrench = wrench_errors(record["wrench_prediction"], record["wrench_target"]) if predict_wrench else None
             for offset, valid in enumerate(record["valid"]):
                 writer.writerow(
                     [
@@ -278,8 +375,11 @@ def evaluate_dataset(
                         frame + offset if valid else "",
                         int(valid),
                         *[float(errors[key][offset]) if valid else "" for key in errors],
+                        *([float(wrench[key][offset]) if valid else "" for key in wrench] if wrench else []),
                         *record["prediction"][offset],
                         *record["target"][offset],
+                        *(record["wrench_prediction"][offset] if predict_wrench else []),
+                        *(record["wrench_target"][offset] if predict_wrench else []),
                     ]
                 )
             handle.flush()
@@ -292,16 +392,19 @@ def evaluate_dataset(
                     frame,
                     record["policy_call_wall_ms"],
                 )
-    np.savez_compressed(
-        output_dir / "predictions.npz",
-        episode=np.array([r["episode"] for r in records]),
-        frame=np.array([r["frame"] for r in records]),
-        prediction=np.stack([r["prediction"] for r in records]),
-        target=np.stack([r["target"] for r in records]),
-        valid=np.stack([r["valid"] for r in records]),
-        state=np.stack([r["state"] for r in records]),
-        policy_call_wall_ms=np.array([r["policy_call_wall_ms"] for r in records]),
-    )
+    arrays = {
+        "episode": np.array([r["episode"] for r in records]),
+        "frame": np.array([r["frame"] for r in records]),
+        "prediction": np.stack([r["prediction"] for r in records]),
+        "target": np.stack([r["target"] for r in records]),
+        "valid": np.stack([r["valid"] for r in records]),
+        "state": np.stack([r["state"] for r in records]),
+        "policy_call_wall_ms": np.array([r["policy_call_wall_ms"] for r in records]),
+    }
+    if predict_wrench:
+        arrays["wrench_prediction"] = np.stack([r["wrench_prediction"] for r in records])
+        arrays["wrench_target"] = np.stack([r["wrench_target"] for r in records])
+    np.savez_compressed(output_dir / "predictions.npz", **arrays)
     summary = {"status": "complete", "overall": summarize_records(records), "episodes": {}}
     summary["input_modality"] = "rgb_state_touch" if use_tactile else "rgb_state"
     summary["latency"] = {
@@ -317,10 +420,16 @@ def evaluate_dataset(
         "50 mm is a diagnostic threshold, not a robot workspace/speed/collision safety limit.",
         "Baseline holds current state at every horizon offset; it is not another trained policy.",
     ]
+    if predict_wrench:
+        summary["limitations"].append(
+            "Wrench metrics evaluate an auxiliary prediction target in K frame; they do not measure force control."
+        )
     for episode in episode_lengths:
         subset = [r for r in records if r["episode"] == episode]
         summary["episodes"][str(episode)] = summarize_records(subset)
         if make_plots:
             save_episode_plot(subset, output_dir / f"episode_{episode:06d}.png")
+            if predict_wrench:
+                save_episode_wrench_plot(subset, output_dir / f"episode_{episode:06d}_wrench.png")
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False))
     return summary

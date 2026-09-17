@@ -254,6 +254,45 @@ class TaberoActionOnlyOutputs(transforms.DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class TaberoActionWrenchInputs(TaberoActionOnlyInputs):
+    """Build a 13D target from absolute 7D actions and synchronized 6D wrist wrench.
+
+    ``wrist_wrench`` is a prediction target, not an input token. The marker-motion
+    tactile field remains the only tactile conditioning stream for this adapter.
+    """
+
+    def __call__(self, data: dict) -> dict:
+        inputs = super().__call__(data)
+        if "actions" not in data:
+            return inputs
+        actions = np.asarray(data["actions"])
+        if "wrist_wrench" not in data:
+            raise KeyError("Wrist-wrench supervision requires 'wrist_wrench' in data")
+        wrist_wrench = np.asarray(data["wrist_wrench"])
+        expected_shape = (*actions.shape[:-1], 6)
+        if wrist_wrench.shape != expected_shape:
+            raise ValueError(f"Expected wrist_wrench {expected_shape}, got {wrist_wrench.shape}")
+        if wrist_wrench.dtype != np.float32 or not np.isfinite(wrist_wrench).all():
+            raise ValueError("wrist_wrench targets must be finite float32")
+        inputs["actions"] = np.concatenate((actions, wrist_wrench), axis=-1).astype(np.float32, copy=False)
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class TaberoActionWrenchOutputs(transforms.DataTransformFn):
+    """Split the unnormalized 13D prediction into robot action and wrist wrench."""
+
+    def __call__(self, data: dict) -> dict:
+        combined = np.asarray(data["actions"])
+        if combined.ndim != 2 or combined.shape[-1] < 13:
+            raise ValueError("Expected unbatched action+wrench chunk [horizon,>=13]")
+        combined = combined[:, :13].astype(np.float32)
+        if not np.isfinite(combined).all():
+            raise ValueError("Refusing non-finite action or wrist-wrench outputs")
+        return {"actions": combined[:, :7], "wrist_wrench": combined[:, 7:13]}
+
+
+@dataclasses.dataclass(frozen=True)
 class TaberoTacForceInputs(transforms.DataTransformFn):
     """
     Tactile/force stream configuration and loss behavior.
